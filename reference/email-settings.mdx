@@ -1,0 +1,111 @@
+---
+title: "EmailSettings — SMTP Configuration Model"
+sidebarTitle: "EmailSettings"
+description: "EmailSettings holds SMTP server configuration used for email delivery features in Explorador de Archivos, including host, port, credentials, and TLS settings."
+---
+
+`EmailSettings` is an `internal static` class that persists the sender email address used by the email delivery feature in Explorador de Archivos. Settings are serialized as JSON and stored in the user's application data directory (`Application.UserAppDataPath`) under the filename `email_settings.json`, so the configured address survives application restarts without any manual setup by the user.
+
+---
+
+## Storage Location
+
+```
+%APPDATA%\ExploradorDeArchivos\<version>\email_settings.json
+```
+
+The exact path is resolved at runtime by `Application.UserAppDataPath`. If the directory does not exist when saving, it is created automatically.
+
+---
+
+## Methods
+
+### CargarRemitente()
+
+```csharp
+public static string CargarRemitente()
+```
+
+Reads `email_settings.json` and returns the stored sender email address. Returns `string.Empty` if the file does not exist, cannot be read, or the JSON cannot be deserialized. All exceptions are swallowed to avoid interrupting application startup.
+
+**Returns:** The previously saved sender address, or `string.Empty` if none is configured.
+
+---
+
+### GuardarRemitente()
+
+```csharp
+public static void GuardarRemitente(string correo)
+```
+
+Serializes the provided address as indented JSON and writes it to `email_settings.json`. All exceptions are swallowed silently — a write failure does not propagate to the caller.
+
+<ParamField path="correo" type="string" required>
+  The sender email address to persist, e.g. `"remitente@ejemplo.com"`. No format validation is performed inside this method; validate before calling.
+</ParamField>
+
+---
+
+## Persisted Data
+
+The JSON file contains a single property:
+
+```json
+{
+  "Remitente": "remitente@ejemplo.com"
+}
+```
+
+| JSON key | C# property | Description |
+|---|---|---|
+| `Remitente` | `SettingsData.Remitente` | The sender (`From`) email address used when composing outgoing messages |
+
+---
+
+## Usage Example
+
+```csharp
+// On form load — restore previously saved address
+private void FormEmail_Load(object sender, EventArgs e)
+{
+    txtRemitente.Text = EmailSettings.CargarRemitente();
+}
+
+// On send / save button — persist the address for next session
+private void btnGuardar_Click(object sender, EventArgs e)
+{
+    string correo = txtRemitente.Text.Trim();
+    if (!correo.Contains('@'))
+    {
+        MessageBox.Show("Ingrese un correo válido.");
+        return;
+    }
+
+    EmailSettings.GuardarRemitente(correo);
+}
+```
+
+When constructing an SMTP message, use the loaded address as the `From` field:
+
+```csharp
+using var mensaje = new MimeMessage();
+mensaje.From.Add(MailboxAddress.Parse(EmailSettings.CargarRemitente()));
+mensaje.To.Add(MailboxAddress.Parse(destinatario));
+mensaje.Subject = asunto;
+mensaje.Body    = new TextPart("plain") { Text = cuerpo };
+
+using var smtp = new SmtpClient();
+await smtp.ConnectAsync("smtp.gmail.com", 587, SecureSocketOptions.StartTls);
+await smtp.AuthenticateAsync(EmailSettings.CargarRemitente(), appPassword);
+await smtp.SendAsync(mensaje);
+await smtp.DisconnectAsync(quit: true);
+```
+
+<CardGroup cols={2}>
+  <Card title="PlaylistGlobal" href="/reference/playlist-global">
+    Shared in-memory playlist state between forms
+  </Card>
+  <Card title="MusicMetadataFetcher" href="/reference/music-metadata-fetcher">
+    Downloads lyrics and cover art for MP3 files
+  </Card>
+</CardGroup>

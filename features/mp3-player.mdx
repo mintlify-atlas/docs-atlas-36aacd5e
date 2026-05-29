@@ -1,0 +1,164 @@
+---
+title: "MP3 Player with Playlists, Lyrics, and Album Art"
+sidebarTitle: "MP3 Player"
+description: "Play MP3, WAV, and AAC files with a full playlist, shuffle, loop, 5-second skip, volume control, embedded metadata display, Genius lyrics, and Spotify album art."
+---
+
+The MP3 Player (`FormMP3`) is a full-featured audio player built on top of **NAudio** (`WaveOutEvent` + `AudioFileReader`). It opens automatically when you double-click a supported audio file in the file browser, and it shares a persistent global playlist (`PlaylistGlobal`) with the main file browser window (`Form1`). Every session is saved to disk on close and fully restored the next time you open the application.
+
+## Opening the Player
+
+You can open the MP3 Player in two ways:
+
+- **Double-click** any audio file (`.mp3`, `.wav`, `.aac`, `.flac`, `.ogg`) in the main file browser. The player launches, the file is added to the playlist, and playback starts immediately via `AgregarYReproducir(string rutaArchivo)`.
+- **Click the toolbar button** in the main window to open the player without starting a new song. Previously saved playlist and playback position are restored automatically.
+
+## Playback Controls
+
+| Control | Function |
+|---|---|
+| **Play / Pause** | Toggles `WaveOutEvent` between `Play()` and `Pause()` states. |
+| **Next** | Advances to the next song in the playlist (or next in the shuffle order when shuffle is active). |
+| **Previous** | Goes back to the previous song in the playlist (or previous in the shuffle order). |
+| **Restart** | Resets `audioFile.CurrentTime` to `TimeSpan.Zero` and resumes playback from the beginning of the current song. |
+| **+5 s (Forward)** | Seeks forward 5 seconds: `audioFile.CurrentTime += TimeSpan.FromSeconds(5)`. |
+| **−5 s (Rewind)** | Seeks back 5 seconds. If the current position is less than 5 s, the song rewinds to the start. |
+| **Loop** | Enables loop mode — see [Loop Mode](#loop-mode). |
+| **Shuffle** | Enables shuffle mode — see [Shuffle Mode](#shuffle-mode). |
+| **Volume slider** | Maps slider position (0–100) to `audioFile.Volume` (0.0–1.0) in real time. |
+| **Seek bar** | Dragging `trackDuracion` sets `audioFile.CurrentTime` directly. The bar is updated every 500 ms by an internal timer. |
+
+A 500 ms `Timer` continuously updates:
+- `label3` — current playback position (`mm:ss`)
+- `label2` — total song duration (`mm:ss`)
+- `label4` — position in the playlist (e.g., `3 de 12`)
+- `trackDuracion` — seek bar value
+
+## Playlist Management
+
+### Adding files
+
+- **Open file dialog** — click the add button (pictSearch) to open a multi-select `OpenFileDialog` filtered to `*.mp3;*.wav;*.aac;*.flac;*.ogg`. Duplicate paths are detected and skipped automatically.
+- **From the file browser** — selecting or double-clicking an audio file in `Form1` calls `AgregarALista(string)` or `AgregarYReproducir(string)`, which add the file and optionally start playback.
+
+### Removing a song
+
+Select a song in the playlist list box, then click the **Delete** button (`btnEliminar`). If the deleted song is the one currently playing, playback automatically continues with the next available track. If no songs remain, the player stops and all labels reset.
+
+### Clearing the entire playlist
+
+Click **Clear All** (`btnDeleteList`) to remove every song from the list, stop playback, release NAudio resources, and reset all display labels and the seek bar.
+
+### Exporting to M3U
+
+Click **Save Playlist** (`btnSavePlaylist`) to export the current playlist as a standard `playlist.m3u` file. A `FolderBrowserDialog` prompts for the destination directory. The exported file uses `#EXTM3U` format with one absolute file path per line, saved as UTF-8.
+
+```text
+#EXTM3U
+C:\Music\Artist - Song.mp3
+C:\Music\Another Track.wav
+```
+
+### Automatic state persistence
+
+When the application closes, `CerrarCompletamente()` calls `GuardarEstado()`, which serializes the entire playlist, the currently selected track index, and the current playback position (in seconds) to:
+
+```
+%AppData%\MiReproductor\playlist.json
+```
+
+On the next launch, `CargarEstado()` reads this file, restores the playlist, seeks to the saved position, and leaves playback paused so you can resume at any time.
+
+## Shuffle Mode
+
+Enabling shuffle uses the `Desordenador` class, which implements a **Fisher-Yates** shuffle:
+
+```csharp
+public void Fill()
+{
+    for (int i = 0; i < vector.Length; i++)
+        vector[i] = i + 1;          // fill with 1..N
+}
+
+public void Shuffle()
+{
+    Random random = new Random();
+    for (int i = 0; i < vector.Length; i++)
+    {
+        int j = random.Next(i, vector.Length);
+        int temp = vector[i];
+        vector[i] = vector[j];
+        vector[j] = temp;           // swap
+    }
+}
+```
+
+`RecalcularShuffle()` in `FormMP3` instantiates a `Desordenador` with the playlist count, calls `Fill()` then `Shuffle()`, and builds a new play order where the **currently playing song is placed first** in the shuffled sequence. This guarantees the current song finishes before the random order begins.
+
+When shuffle is active, the **Next** and **Previous** buttons navigate through `ordenAleatorio[]` by incrementing or decrementing `indiceShuffle`. When the array is exhausted, a message is shown and shuffle turns off.
+
+<Note>
+  Adding a new song to the playlist while shuffle is active automatically calls `RecalcularShuffle()` to include the new track in the random order.
+</Note>
+
+## Loop Mode
+
+Click the **Loop** button (`pictLoop`) to toggle loop mode on or off. The button background turns **blue** when active.
+
+While looping, the 500 ms timer detects when `trackDuracion.Value >= trackDuracion.Maximum` and immediately resets `audioFile.CurrentTime = TimeSpan.Zero` before calling `outputDevice.Play()` again — no audio gap occurs between repetitions.
+
+**Shuffle and loop are mutually exclusive.** Enabling one automatically disables the other.
+
+## Song Metadata
+
+When a song starts playing, `VerPropiedades(Cancion)` populates `dataGridView1` with the following fields:
+
+| Property | Source |
+|---|---|
+| **Duration** | `AudioFileReader.TotalTime` (NAudio) |
+| **Sample Rate** | `AudioFileReader.WaveFormat.SampleRate` (NAudio) |
+| **Name** | `FileInfo.Name` |
+| **Artist** | `TagLib.File.Tag.Performers[0]` |
+| **Album** | `TagLib.File.Tag.Album` |
+| **Location** | `FileInfo.FullName` |
+| **Size** | `FileInfo.Length` formatted as KB |
+| **Creation date** | `FileInfo.CreationTime` |
+| **Last access** | `FileInfo.LastAccessTime` |
+
+<Tip>
+  You can edit a song's ID3 tags inline. Select a track in the playlist, then click the **Edit** button (`btnEdit`). This pauses playback, releases the NAudio file handle so TagLib can write to the file, opens `FrmEditarCancion`, and resumes playback at the exact position you were at when the dialog closes.
+</Tip>
+
+## Lyrics & Album Art
+
+Every time a song starts playing, `FormMP3` fires an asynchronous background task via `MusicMetadataFetcher.ActualizarMetadatosDelArchivoAsync(string rutaArchivo)`:
+
+<Steps>
+  <Step title="Extract existing tags">
+    `ExtraerMetadatos()` reads the embedded **Artist**, **Title**, and **Album** from the MP3 ID3 tags using TagLib. If the title tag is missing or looks like a raw filename (contains a `-` separator or ends in `.mp3`), it parses the filename automatically.
+  </Step>
+  <Step title="Fetch lyrics from Genius">
+    The Genius REST API (`https://api.genius.com/search`) is queried with `"Artist Title"` as the search term. The first result URL is scraped with **HtmlAgilityPack** to extract the `Lyrics__Container` div content. Line breaks are preserved.
+  </Step>
+  <Step title="Fetch album art from Spotify">
+    A Spotify **Client Credentials** token is obtained (cached for its lifetime), then `https://api.spotify.com/v1/search` is queried for the album. If Spotify fails, iTunes and Last.fm are tried as fallbacks.
+  </Step>
+  <Step title="Write back to the MP3 file">
+    If new lyrics or cover art were found and the tags are currently empty, they are written into the MP3 ID3 tags using TagLib so they are available on subsequent plays without an internet request. Up to 3 write attempts are made with 300 ms spacing to handle the file being locked by the audio engine.
+  </Step>
+  <Step title="Update the UI">
+    `listBoxLetras` is populated line-by-line with the lyrics. `pictureBoxAlbum` is updated with the downloaded cover art image.
+  </Step>
+</Steps>
+
+<Note>
+  The Genius and Spotify API credentials are defined as constants directly in the `FormMP3` constructor:
+
+  ```csharp
+  const string geniusToken      = "IOSnEinv18eVvuJXfneYTML287cEol2kggWCOlBtqUdlznnCBzacDghWCdhSrY7L";
+  const string spotifyClientId  = "0ea2be936ec7419abbb440b806b34aa9";
+  const string spotifyClientSecret = "8c0371ae2ff849a28da6c25935dcc62e";
+  ```
+
+  To use your own credentials, replace these values before building the project.
+</Note>

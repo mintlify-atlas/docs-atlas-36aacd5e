@@ -1,0 +1,152 @@
+---
+title: "ImageProcessor — Bitmap Filters and Adjustments"
+sidebarTitle: "ImageProcessor"
+description: "ImageProcessor provides static methods for adjusting brightness, contrast, and saturation via ColorMatrix, plus grayscale, sepia, and color inversion filters."
+---
+
+`ImageProcessor` is a `static` utility class in Explorador de Archivos that applies GDI+ `ColorMatrix` transformations to `System.Drawing.Bitmap` objects. Every method allocates and returns a **new** `Bitmap` in `Format32bppArgb` — the source bitmap is never modified in place. Callers are responsible for disposing the returned bitmap when it is no longer needed.
+
+<Warning>
+  All four methods return a newly allocated `Bitmap`. Always call `.Dispose()` on the returned value (or wrap it in a `using` block) to avoid GDI+ handle leaks, especially when processing many images in a loop.
+</Warning>
+
+---
+
+## Adjust()
+
+Applies brightness, contrast, and saturation adjustments simultaneously by multiplying three separate `ColorMatrix` instances (contrast × saturation × brightness) into a single combined matrix.
+
+```csharp
+public static Bitmap Adjust(
+    Bitmap source,
+    int brightness,
+    int contrast,
+    int saturation
+)
+```
+
+<ParamField path="source" type="Bitmap" required>
+  The original bitmap to transform. Not modified; a new bitmap is returned.
+</ParamField>
+
+<ParamField path="brightness" type="int" required>
+  Brightness offset in the range **-100 to 100**. Negative values darken the image; positive values brighten it. Internally scaled to the `-1.0 … 1.0` float range and applied as a translation in the color matrix.
+</ParamField>
+
+<ParamField path="contrast" type="int" required>
+  Contrast multiplier in the range **-100 to 100**. Zero leaves contrast unchanged. Positive values increase the difference between light and dark areas; negative values compress it toward mid-gray.
+</ParamField>
+
+<ParamField path="saturation" type="int" required>
+  Saturation scale in the range **-100 to 100**. `-100` removes all color (equivalent to grayscale using luminance coefficients R=0.3086, G=0.6094, B=0.0820). `0` leaves saturation unchanged. Positive values boost color intensity.
+</ParamField>
+
+```csharp
+using var adjusted = ImageProcessor.Adjust(sourceBitmap, brightness: 20, contrast: 10, saturation: -30);
+pictureBox1.Image = adjusted;
+```
+
+---
+
+## ApplyGrayscale()
+
+Converts the image to grayscale using standard luminance weights (R=0.299, G=0.587, B=0.114) applied uniformly across the R, G, and B output channels via a `ColorMatrix`.
+
+```csharp
+public static Bitmap ApplyGrayscale(Bitmap source)
+```
+
+<ParamField path="source" type="Bitmap" required>
+  The source bitmap. Not modified.
+</ParamField>
+
+```csharp
+using var gray = ImageProcessor.ApplyGrayscale(sourceBitmap);
+pictureBox1.Image = gray;
+```
+
+---
+
+## ApplySepia()
+
+Applies a classic sepia-tone transformation using the following `ColorMatrix` coefficients:
+
+| Channel | R weight | G weight | B weight |
+|---------|----------|----------|----------|
+| Output R | 0.393 | 0.769 | 0.189 |
+| Output G | 0.349 | 0.686 | 0.168 |
+| Output B | 0.272 | 0.534 | 0.131 |
+
+```csharp
+public static Bitmap ApplySepia(Bitmap source)
+```
+
+<ParamField path="source" type="Bitmap" required>
+  The source bitmap. Not modified.
+</ParamField>
+
+```csharp
+using var sepia = ImageProcessor.ApplySepia(sourceBitmap);
+pictureBox1.Image = sepia;
+```
+
+---
+
+## InvertColors()
+
+Negates each color channel by multiplying R, G, and B by `-1` and translating by `1`, equivalent to `output = 1 - input` per channel. The alpha channel is preserved.
+
+```csharp
+public static Bitmap InvertColors(Bitmap source)
+```
+
+<ParamField path="source" type="Bitmap" required>
+  The source bitmap. Not modified.
+</ParamField>
+
+```csharp
+using var inverted = ImageProcessor.InvertColors(sourceBitmap);
+pictureBox1.Image = inverted;
+```
+
+---
+
+## Parameter Ranges at a Glance
+
+| Method | Parameter | Min | Max | Neutral |
+|---|---|---|---|---|
+| `Adjust` | `brightness` | -100 | 100 | 0 |
+| `Adjust` | `contrast` | -100 | 100 | 0 |
+| `Adjust` | `saturation` | -100 | 100 | 0 |
+| `ApplyGrayscale` | _(none)_ | — | — | — |
+| `ApplySepia` | _(none)_ | — | — | — |
+| `InvertColors` | _(none)_ | — | — | — |
+
+Values outside the `-100 … 100` range are not clamped internally — callers should validate inputs before passing them to `Adjust()`.
+
+---
+
+## Disposal Pattern
+
+Because all methods return a new `Bitmap`, the caller must manage its lifetime:
+
+```csharp
+// Option 1: using statement (recommended)
+using var result = ImageProcessor.ApplyGrayscale(source);
+// use result...
+// automatically disposed at end of block
+
+// Option 2: manual disposal (e.g. when assigning to a PictureBox)
+var previous = pictureBox1.Image;
+pictureBox1.Image = ImageProcessor.ApplySepia(source);
+previous?.Dispose(); // dispose the old image to free GDI handle
+```
+
+<CardGroup cols={2}>
+  <Card title="MusicMetadataFetcher" href="/reference/music-metadata-fetcher">
+    Downloads and embeds album art into MP3 ID3 tags
+  </Card>
+  <Card title="DataPipeline" href="/reference/data-pipeline">
+    Data processing pipeline for structured file imports
+  </Card>
+</CardGroup>

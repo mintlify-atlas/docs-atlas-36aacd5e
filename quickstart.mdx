@@ -1,47 +1,68 @@
 ---
-title: "Quickstart"
-description: "Begin with a guide on the fastest path to a successful outcome"
+title: "Get Started with Explorador de Archivos"
+sidebarTitle: "Quickstart"
+description: "Clone the repository, open the solution in Visual Studio 2022, restore NuGet packages, and run Explorador de Archivos on Windows in under five minutes."
 ---
 
-Describe how someone begins using your product. What is the first thing they need to do? Are there any prerequisites?
-
-A quickstart should take someone from zero to using your product. They'll get a quick win and a sense of what they can accomplish.
-
-## Prerequisites
-
-Before you begin, you must have:
-
-- Requirement one (for example, Node.js 18+, a free account, an API key)
-- Requirement two (for example, a compatible device, a compatible browser, a compatible operating system)
-
-## Get started
+Getting Explorador de Archivos up and running is straightforward. The project is a self-contained .NET 8 WinForms solution: all dependencies are declared as NuGet package references in the `.csproj` file and are restored automatically the first time you build. You will need Visual Studio 2022 on Windows — no additional runtimes or external installers are required beyond the .NET 8 SDK.
 
 <Steps>
-  <Step title="Install">
-    Describe how to install your product or sign up.
+  <Step title="Install Visual Studio 2022 and the .NET 8 SDK">
+    Download and install [Visual Studio 2022](https://visualstudio.microsoft.com/vs/) (version 17.x or later). During installation, select the **".NET Desktop Development"** workload — this installs the WinForms designer, MSBuild support, and the .NET 8 SDK in a single step.
+
+    If you already have Visual Studio installed, open the **Visual Studio Installer**, click **Modify**, and ensure the **.NET Desktop Development** workload and the **.NET 8.0 Runtime** optional component are both checked.
+
+    <Info>
+      The project targets `net8.0-windows`. The .NET 8 SDK is included with the .NET Desktop Development workload in Visual Studio 2022 17.8 and later.
+    </Info>
+  </Step>
+
+  <Step title="Clone the repository">
+    Open a terminal (PowerShell, Command Prompt, or Git Bash) and clone the repository to your local machine:
 
     ```bash
-    npm install your-package
+    git clone https://github.com/XxLunaxX29/ExploradorDeArchivos.git
+    ```
+
+    Then navigate into the cloned directory:
+
+    ```bash
+    cd ExploradorDeArchivos
     ```
   </Step>
-  <Step title="Configure">
-    Describe any setup or configuration needed before first use.
 
-    ```bash
-    your-cli init
-    ```
+  <Step title="Open the solution in Visual Studio">
+    Double-click `ExploradorDeArchivos.sln` in File Explorer, or open it from within Visual Studio via **File → Open → Project/Solution**. Visual Studio will parse the solution and load the `ExploradorDeArchivos` project automatically.
   </Step>
-  <Step title="Run it">
-    Show the first thing a user does to see it working.
 
-    ```bash
-    your-cli start
-    ```
+  <Step title="Restore NuGet packages">
+    NuGet package restore runs automatically the first time you build the solution. If you want to restore packages explicitly before building — or if you prefer the command line — run either of the following commands from the repository root:
+
+    <CodeGroup>
+      ```bash Restore packages
+      dotnet restore
+      ```
+
+      ```bash Build in Release mode
+      dotnet build -c Release
+      ```
+    </CodeGroup>
+
+    Visual Studio also surfaces a **Restore NuGet Packages** option by right-clicking the solution node in Solution Explorer. All packages — including VideoLAN.LibVLC.Windows which bundles the VLC native libraries — are downloaded from nuget.org on the first restore and cached locally for subsequent builds.
+  </Step>
+
+  <Step title="Press F5 to run">
+    With the solution open in Visual Studio, press **F5** (or click the green **Run** button in the toolbar) to build and launch the application in debug mode. The app will compile, resolve all NuGet assets, and open the main window.
+
+    On first launch, Explorador de Archivos opens directly to your **My Documents** folder — you will see:
+
+    - **Left panel** — a quick-access sidebar (`listBoxShortcuts`) with shortcuts to Documents, Downloads, Pictures, Music, Videos, Desktop, and This PC.
+    - **Main grid** (`dataGridView1`) — a file and folder listing for My Documents, showing icon, name, type, contents, size, and last-modified date for every entry.
+    - **Preview pane** (`dataGridView2`) — a secondary grid that shows the contents of whichever folder is currently selected in the main grid.
+    - **Toolbar** — a path bar where you can type any directory path and press Enter to navigate, plus buttons for Back, Open Folder, Drives, and each specialized module.
   </Step>
 </Steps>
 
 <Tip>
-  Give people a way to get help. This could be a link to a support page, a chat with a customer support agent, or a forum for your product.
-
-  Example: Need help? Reach out to us at [support@yourcompany.com](mailto:support@yourcompany.com).
+  The toolbar buttons at the top of `Form1` each open a dedicated child window for a specific module. Click the **MP3** button to open `FormMP3`, the **MP4** button to open `FormMP4`, the **Database** button for `FormDataBase`, the **Corrector** button for `FormCorrector`, the **Editor** button for `FormEdit`, and the **Recorder** button for `FormGrabadora`. You can also trigger the media players automatically by double-clicking any audio, video, or image file directly in the file grid.
 </Tip>

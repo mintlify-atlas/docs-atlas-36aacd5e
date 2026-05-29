@@ -1,0 +1,126 @@
+---
+title: "File Browser: Explore and Open Files by Type"
+sidebarTitle: "File Browser"
+description: "The Explorador de Archivos file browser displays folders and files in a two-panel grid, automatically detects file types, and launches the right built-in viewer on double-click."
+---
+
+The file browser is the heart of Explorador de Archivos. When the application starts it opens your Documents folder and populates the main grid with every subfolder and file it contains. From there you can navigate freely, preview subfolder contents in a secondary panel, and open any file with a single double-click — the app automatically picks the right viewer based on the file's extension.
+
+## Main File Grid
+
+The main grid (`dataGridView1`) is configured by `ConfigurarGrid1()` and displays one row per folder or file in the current directory. Every row contains the following columns:
+
+| Column | Description |
+|---|---|
+| **Icon** | A 24 × 24 px image that represents the file category (folder, video, music, image, text, or other) |
+| **Nombre** | The file or folder name |
+| **Tipo** | `Carpeta` for directories; the file extension (e.g. `.mp4`) for files |
+| **Contenido** | For folders: a summary such as `2 carpetas, 5 archivos`; for files: `-` |
+| **Tamaño** | File size formatted as B, KB, MB, or GB; empty for folders |
+| **Fecha** | The `LastWriteTime` timestamp of the item |
+| *(Ruta — hidden)* | The full absolute path used internally for all navigation and opening logic |
+
+The **Ruta** column is intentionally hidden from the user but is read on every double-click and selection event, so the displayed path is always in sync with the internal state.
+
+### Icon System
+
+Each file category gets its own icon image, loaded at startup via `LoadCustomIcons()` and stored in an `ImageList` with 24 × 24 pixel slots:
+
+| Category | Icon index field | Extensions covered |
+|---|---|---|
+| Folder | `idxFolder` | Any directory |
+| Video | `idxVideo` | mp4, avi, mkv, mov |
+| Music | `idxMusic` | mp3, wav, aac |
+| Image | `idxImage` | jpg, jpeg, png, gif |
+| Text | `idxText` | txt, csv, json, xml, log |
+| Other | `idxOther` | Everything else |
+
+`GetIcon(bool isDirectory, string path)` resolves the correct image at row-insertion time and falls back to `null` if an icon file was not found on disk.
+
+### Secondary Preview Panel
+
+<Info>
+  When you single-click a folder in the main grid, the secondary panel (`dataGridView2`) immediately populates with that folder's contents. It shows three columns — **Icon**, **Nombre**, and **Contenido** — and lists all subfolders first (each indented with `-> ` for their child files), followed by any loose files at the root of the selected folder. This panel is read-only and is cleared automatically when a file (rather than a folder) is selected.
+</Info>
+
+---
+
+## File Type Detection
+
+`LoadDirectory(string path)` uses `DirectoryInfo.GetDirectories()` and `DirectoryInfo.GetFiles()` to enumerate items, then calls the private boolean helpers to classify each file:
+
+```csharp
+private bool IsVideo(string ext) => ext is "mp4" or "avi" or "mkv" or "mov";
+private bool IsMusic(string ext) => ext is "mp3" or "wav" or "aac";
+private bool IsText(string ext) => ext is "txt" or "csv" or "json" or "xml" or "log";
+private bool IsImage(string ext) => ext is "jpg" or "jpeg" or "png" or "gif";
+```
+
+The same helpers drive the icon assignment **and** the double-click action:
+
+| Extension(s) | Category | Double-click action |
+|---|---|---|
+| `mp4`, `avi`, `mkv`, `mov` | Video | Opens **FormMP4** (built-in video player) |
+| `mp3`, `wav`, `aac` | Music | Opens **FormMP3** (built-in audio player) |
+| `jpg`, `jpeg`, `png`, `gif` | Image | Opens **FormEditarFotos** (image editor) |
+| `txt`, `csv`, `json`, `xml`, `log` | Text | Opens with the system default program |
+| *(any other extension)* | Other | Opens with the system default program |
+| *(directory)* | Folder | Navigates into the folder |
+
+---
+
+## Opening Files
+
+Double-clicking any row in the main grid triggers `dataGridView1_CellDoubleClick`, which reads the hidden **Ruta** cell and decides what to do next.
+
+<Steps>
+  <Step title="Identify the target">
+    The event handler reads `dataGridView1.Rows[e.RowIndex].Cells["Ruta"].Value` to get the full path of the clicked item.
+  </Step>
+  <Step title="Check whether it is a folder or a file">
+    `Directory.Exists(path)` is tested first. If `true`, the current path is pushed to the history stack and `LoadDirectory(path)` is called, refreshing the grid. If `false`, the code proceeds to file-type detection.
+  </Step>
+  <Step title="Detect the file type">
+    `Path.GetExtension(path)` is lowercased and stripped of the leading dot, then passed through `IsMusic`, `IsVideo`, and `IsImage`. Any match routes the file to `AbrirReproductor(path)`.
+  </Step>
+  <Step title="Launch the appropriate viewer">
+    `AbrirReproductor` opens (or reuses) the matching form — **FormMP4**, **FormMP3**, or **FormEditarFotos** — calls the form's load method (`CargarYReproducir`, `AgregarYReproducir`, or `AbrirImagen`), and brings the window to the front.
+  </Step>
+  <Step title="Fall back to the system default">
+    If the extension does not match any media category, the file is handed to the OS via `Process.Start` with `UseShellExecute = true`, which opens it in whatever program the user has registered for that file type.
+  </Step>
+</Steps>
+
+---
+
+## Automatic Playlist Integration
+
+<Note>
+  If **FormMP3** is already open when you **single-click** (select) an audio file in the main grid, the file is silently added to the MP3 player's playlist by calling `_formMP3.AgregarALista(path)` — no new window opens and playback of the current track is not interrupted. This happens in the `dataGridView1_SelectionChanged` handler, so simply moving the keyboard cursor over an audio file while the player is running is enough to queue it up.
+</Note>
+
+---
+
+## Size Formatting
+
+File sizes are rendered by `FormatSize(long bytes)`, which applies the following thresholds:
+
+```csharp
+private string FormatSize(long bytes)
+{
+    if (bytes < 1024) return bytes + " B";
+    double kb = bytes / 1024.0;
+    if (kb < 1024) return kb.ToString("F1") + " KB";
+    double mb = kb / 1024.0;
+    if (mb < 1024) return mb.ToString("F1") + " MB";
+    double gb = mb / 1024.0;
+    return gb.ToString("F2") + " GB";
+}
+```
+
+| Range | Displayed as |
+|---|---|
+| 0 – 1 023 bytes | `n B` |
+| 1 KB – 1 023 KB | `n.n KB` |
+| 1 MB – 1 023 MB | `n.n MB` |
+| ≥ 1 GB | `n.nn GB` |

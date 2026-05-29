@@ -1,0 +1,132 @@
+---
+title: "Data Cleaner: Validate and Fix Structured Data Files"
+sidebarTitle: "Data Cleaner"
+description: "Load CSV, Excel, JSON, XML, or Word files into the Data Cleaner, detect column types automatically, find data errors, and export a corrected dataset."
+---
+
+The **Data Cleaner** (`FormCorrector`) provides a full data-quality pipeline for structured files. It reads a file through an `IFileReader` implementation, runs it through a three-step `DataPipeline`, infers the dominant data type of every column with `ColumnTypeInferrer`, colour-codes problematic cells, applies automatic cleaning rules via `DataCleaner.Clean()`, and lets you fix remaining issues manually before exporting the result.
+
+## Supported Input Formats
+
+| Format      | Extension |
+|-------------|-----------|
+| CSV         | `.csv`    |
+| Excel       | `.xlsx`   |
+| JSON        | `.json`   |
+| XML         | `.xml`    |
+| Word        | `.docx`   |
+
+<Note>
+  The legacy formats `.xls` (Excel 97–2003) and `.doc` (Word 97–2003) are not supported. Open the file in the corresponding Office application, save it in the modern format, and reload it in the Data Cleaner.
+</Note>
+
+## Processing Pipeline
+
+<Steps>
+  <Step title="Select a file">
+    Click **Select File** (`btnSeleccionar`). The standard open-file dialog accepts the formats listed above. The chosen path appears in the file path text field. The correct `IFileReader` implementation (`CsvFileReader`, `ExcelFileReader`, `JsonFileReader`, `XmlFileReader`, or `WordFileReader`) is selected automatically by file extension; for ambiguous extensions such as `.txt` the first bytes of the file are sniffed to detect JSON or XML content before falling back to delimiter-separated text.
+  </Step>
+  <Step title="Enter an order-by expression (optional)">
+    Type a **Dynamic LINQ** ordering expression in the **Order By** field (`txtOrdenarPor`) before processing. The expression is passed directly to `DataPipeline.Execute()` and applied after validation.
+
+    <Tip>
+      Valid order expressions follow Dynamic LINQ syntax. Some examples:
+
+      ```
+      Nombre ASC
+      Fecha DESC
+      Edad ASC, Apellido DESC
+      Precio DESC
+      ```
+
+      The field name must match a column header in your file exactly (case-insensitive). If the expression is invalid, `DataPipeline` throws an `ArgumentException` with a descriptive message.
+    </Tip>
+  </Step>
+  <Step title="Click Process">
+    `BtnProcesar_Click` runs `RunPipeline()` on a background thread to keep the UI responsive. The pipeline executes three steps in order:
+
+    1. **Normalize** — trims leading and trailing whitespace from every string cell.
+    2. **Validate** — `DynamicRowValidator` checks each row for empty required fields and other structural rules. Rows that fail are moved to `InvalidRows` and logged.
+    3. **Order** — if an order-by expression was supplied, `ApplyOrdering()` converts the rows to `ExpandoObject` instances and calls Dynamic LINQ's `OrderBy()`.
+  </Step>
+  <Step title="Review the error log and highlighted cells">
+    After processing, `ColumnTypeInferrer.Infer()` runs on the valid rows to determine the dominant type of each column. Cells that conflict with their column's inferred type are highlighted in the grid and listed in the error log (`lstErrores`).
+
+    <Info>
+      Rows that fail the `DynamicRowValidator` checks are separated from the valid dataset and appear in the error log with their row number and the name of the field that caused the failure. They are not shown in the main grid, but they are tracked in `InvalidRows` so you are aware of the total number of rejected records.
+    </Info>
+  </Step>
+  <Step title="Apply automatic cleaning">
+    Click **Clean Data** (`btnLimpiarDatos`). A column-type review dialog appears showing the inferred type for each column; you can override any type before confirming. `DataCleaner.Clean()` then applies type-specific rules to every cell (see [Automatic Cleaning Rules](#automatic-cleaning-rules) below). Corrected cells turn **green** in the grid and a change log is shown in the error panel.
+  </Step>
+  <Step title="Edit remaining cells manually">
+    Click any cell in the grid to edit it directly. The `DataGridView` is fully editable. After manual edits, click **Save Corrections** (`btnGuardarCorrecciones`) to synchronise the grid back into `_validRows` and re-run type inference so the error highlights update.
+  </Step>
+  <Step title="Export">
+    Click **Export** (`btnExportar`) to save the cleaned dataset. A save-file dialog lets you choose the output path and format. `DataExporter.Export()` writes the file using the extension you select.
+  </Step>
+</Steps>
+
+## Column Type Inference
+
+`ColumnTypeInferrer.Infer()` returns an `InferenceResult` containing:
+
+- **`ColumnTypes`** — a dictionary mapping each column name to its dominant `ColumnDataType`: `Text`, `Numeric`, or `Date`.
+- **`CellErrors`** — a list of `CellError` records, each identifying a specific row index, column name, raw value, expected type, and error kind.
+
+The dominant type is decided by counting how many non-empty values in a column parse as numeric or as a date, and comparing that fraction against a configurable threshold (default **70 %**). Column names that semantically imply a type — for example, names containing `fecha`, `date`, `precio`, `id`, or `expediente` — influence the decision even when the threshold is not met.
+
+### Cell error kinds and colours
+
+| Error kind | Meaning | Grid colour |
+|---|---|---|
+| `UnexpectedNumeric` | A pure number appears in a column whose dominant type is **Text** | Red (`#FFA0A0`) |
+| `UnexpectedText` | A non-numeric string appears in a **Numeric** column | Orange (`#FFC864`) |
+| `UnexpectedDate` | A non-date string appears in a **Date** column | Orange (`#FFC864`) |
+
+The status label (`lblTiposError`) summarises the counts after each inference run:
+
+```
+⚠ 3 texto en col. numérica/fecha (🟠)  |  7 número en col. de texto (🔴)
+```
+
+Hovering over a highlighted cell shows a tooltip describing the specific error and suggesting the **Clean Data** action.
+
+## Automatic Cleaning Rules
+
+`DataCleaner.Clean()` receives the valid rows and the confirmed column-type map and applies the following rules per column type:
+
+| Column type | Cleaning applied |
+|---|---|
+| **Text** | Removes special characters (`*`, `@`, `#`, `^`, `~`, `$`, `%`, `_`, and other non-letter/non-digit symbols). For columns that hold **person names or surnames** (e.g. `Nombre`, `Apellido`, `firstname`, `lastname`) a stricter regex is applied that allows only Unicode letters, spaces, hyphens, and apostrophes — blocking digits and all other punctuation. Consecutive spaces are collapsed to one. |
+| **Date** | Normalises the value to `yyyy-MM-dd`. Parsing is attempted with `DateTime.TryParse` and then with `DateTime.TryParseExact` against more than 20 format patterns (including `dd/MM/yyyy`, `MM-dd-yyyy`, `d MMM yyyy`, `MMM d, yyyy`, and others) in three cultures: `es-ES`, `en-US`, and `InvariantCulture`. If no pattern matches, the original value is left unchanged and no log entry is created. |
+| **Numeric** | Strips currency symbols, letter characters, and whitespace. Converts European thousand-and-decimal notation: a lone comma (e.g. `1234,56`) is treated as a decimal separator and becomes `1234.56`; commas that appear alongside a decimal point (e.g. `1.234,56`) are removed as thousand separators to yield `1234.56`. |
+
+Cells that were changed are recorded in a change log with the format:
+
+```
+Fila 4, 'Nombre': "J0hn#" → "Jhn"
+Fila 7, 'FechaNacimiento': "15/03/1990" → "1990-03-15"
+Fila 12, 'Precio': "1.250,00" → "1250.00"
+```
+
+Cleaned cells are highlighted **green** in the grid and listed in the error log panel under the heading *Celdas corregidas por limpieza*.
+
+## Filtering
+
+After processing, `BuildFilterControls()` creates one labelled drop-down per column inside the filter panel (`pnlFiltros`). Each drop-down is pre-populated with the distinct values found in that column, plus a **(Todos)** option at the top.
+
+- **Apply Filters** (`btnAplicarFiltros`) — filters `_validRows` by applying a logical AND across all active drop-down selections and refreshes the grid to show only the matching rows. The count label updates to show `N fila(s) mostradas / M totales`.
+- **Clear Filters** (`btnLimpiarFiltros`) — resets all drop-downs to **(Todos)** and re-renders the full dataset.
+
+Filters operate on the in-memory `_validRows` list and do not modify the underlying data, so you can apply and remove them freely without losing any records.
+
+## Manual Corrections
+
+Every cell in the `DataGridView` is editable. To correct a value:
+
+1. Double-click the cell (or press **F2**) to enter edit mode.
+2. Type the corrected value and press **Enter** or navigate away.
+3. Click **Save Corrections** (`btnGuardarCorrecciones`) when you are done.
+
+Saving rebuilds `_validRows` from the current `DataTable`, re-runs `ColumnTypeInferrer`, rebuilds the cell-error index, and refreshes the grid so that any remaining or newly introduced errors are reflected immediately.

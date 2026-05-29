@@ -1,0 +1,194 @@
+---
+title: "Form1 — Main Application Shell and File Browser"
+sidebarTitle: "Form1"
+description: "Form1 is the host window of Explorador de Archivos. It manages directory navigation, file grid display, quick-access shortcuts, and launches all child module forms."
+---
+
+`Form1` serves as the central hub of the Explorador de Archivos application. It renders a two-pane `DataGridView` layout — the primary grid for the active directory and a secondary preview grid — and coordinates every child form through a singleton-per-instance pattern that reuses open windows instead of spawning duplicates.
+
+## Overview
+
+`Form1` owns the entire navigation lifecycle: it tracks the current path in `_currentPath`, maintains a `Stack<string>` history for back-navigation, and resolves quick-access shortcuts through a `Dictionary<string, string>` that maps friendly labels to absolute paths. When the user double-clicks a file, `Form1` inspects the file extension and either opens the appropriate child player (`FormMP3`, `FormMP4`, `FormEditarFotos`) or delegates to the OS shell for unknown formats.
+
+All child form instances (`_formMP3`, `_formMP4`, `_formDataBase`, `_formCorrector`, `_formEdit`, `_formGrabadora`, `_formEditarFotos`) are stored as private fields. Each launcher button follows the same guard pattern: if the instance already exists and has not been disposed, `BringToFront()` is called; otherwise a fresh instance is created and shown.
+
+## Constructor
+
+```csharp
+public Form1()
+```
+
+The constructor takes no parameters. During initialization it:
+
+1. Configures `dataGridView1` for full-row, single-select, read-only mode.
+2. Sets `imageList1` to 24 × 24 pixels and loads custom file-type icons via `LoadCustomIcons()`.
+3. Calls `ConfigurarGrid1()` and `ConfigurarGrid2()` to define column schemas for both grids.
+4. Navigates to `Environment.SpecialFolder.MyDocuments` via `LoadDirectory()`.
+5. Populates the quick-access sidebar with `InitializeQuickAccess()`.
+6. Wires all event handlers inline.
+7. Registers a `FormClosing` lambda that calls `_formMP3.CerrarCompletamente()` and closes `_formMP4` before the main window exits.
+
+## Public Methods
+
+`Form1` exposes no public API surface. All interaction with child forms is directed outward: `Form1` calls into `FormMP3`, `FormMP4`, and `FormEditarFotos`.
+
+## Private Key Methods
+
+### `LoadDirectory`
+
+```csharp
+private void LoadDirectory(string path)
+```
+
+Clears `dataGridView1`, sets `txtPath.Text`, and repopulates the grid by enumerating `DirectoryInfo.GetDirectories()` and `DirectoryInfo.GetFiles()`. For each subdirectory it counts nested folders and files (best-effort, silently ignores access exceptions) and displays them in the **Contenido** column. File rows include the extension, formatted size, and last-write timestamp. The hidden **Ruta** column stores the absolute path used by double-click handlers.
+
+<ParamField path="path" type="string" required>
+  Absolute path of the directory to load. Pass `"DRIVES"` only through `btnDrives_Click`; use a real filesystem path here.
+</ParamField>
+
+---
+
+### `InitializeQuickAccess`
+
+```csharp
+private void InitializeQuickAccess()
+```
+
+Rebuilds `listBoxShortcuts` and the internal `_shortcutPaths` dictionary from scratch. Adds entries for **Documentos**, **Descargas**, **Imágenes**, **Música**, **Vídeos**, **Escritorio**, and **Este equipo** — each only if the corresponding directory exists. The special token `"DRIVES"` is mapped to **Este equipo** and triggers `btnDrives_Click` instead of `LoadDirectory`.
+
+---
+
+### `AbrirReproductor`
+
+```csharp
+private void AbrirReproductor(string rutaArchivo)
+```
+
+Determines the correct child form based on file extension and applies the singleton pattern before delegating playback.
+
+<ParamField path="rutaArchivo" type="string" required>
+  Absolute path of the file to open. The extension is normalized to lowercase without the leading dot before matching.
+</ParamField>
+
+| Extension group | Target form | Method called |
+|---|---|---|
+| `mp4`, `avi`, `mkv`, `mov` | `FormMP4` | `CargarYReproducir(rutaArchivo)` |
+| `mp3`, `wav`, `aac` | `FormMP3` | `AgregarYReproducir(rutaArchivo)` |
+| `jpg`, `jpeg`, `png`, `gif` | `FormEditarFotos` | `AbrirImagen(rutaArchivo)` |
+
+---
+
+### `GetIcon`
+
+```csharp
+private Image GetIcon(bool isDirectory, string path)
+```
+
+Returns the pre-loaded `Image` from `imageList1` that matches the file category.
+
+<ParamField path="isDirectory" type="bool" required>
+  When `true`, the folder icon is returned regardless of the path.
+</ParamField>
+
+<ParamField path="path" type="string" required>
+  File path whose extension is inspected. The extension is extracted, lowercased, and stripped of the leading dot before the category helpers are called.
+</ParamField>
+
+<ResponseField name="Image" type="System.Drawing.Image">
+  One of the pre-loaded category icons (`idxFolder`, `idxVideo`, `idxMusic`, `idxText`, `idxImage`, `idxOther`), or `null` if the `imageList1` index is `-1` (icon file not found on disk at startup).
+</ResponseField>
+
+---
+
+### `FormatSize`
+
+```csharp
+private string FormatSize(long bytes)
+```
+
+Converts a raw byte count into a human-readable string.
+
+<ParamField path="bytes" type="long" required>
+  Raw file size in bytes as reported by `FileInfo.Length`.
+</ParamField>
+
+<ResponseField name="string" type="string">
+  Formatted size string. Returns `"N B"` for values under 1 024, `"N.N KB"` under 1 MB, `"N.N MB"` under 1 GB, or `"N.NN GB"` for larger files.
+</ResponseField>
+
+---
+
+### Extension Predicate Helpers
+
+```csharp
+private bool IsVideo(string ext)
+private bool IsMusic(string ext)
+private bool IsText(string ext)
+private bool IsImage(string ext)
+```
+
+Each method receives a **lowercased, dot-stripped** extension string and returns `true` if it belongs to the named category.
+
+| Method | Recognized extensions |
+|---|---|
+| `IsVideo` | `mp4`, `avi`, `mkv`, `mov` |
+| `IsMusic` | `mp3`, `wav`, `aac` |
+| `IsText` | `txt`, `csv`, `json`, `xml`, `log` |
+| `IsImage` | `jpg`, `jpeg`, `png`, `gif` |
+
+---
+
+### `MostrarContenidoGrid2`
+
+```csharp
+private void MostrarContenidoGrid2(string ruta)
+```
+
+Fills `dataGridView2` with a tree-flattened preview of a selected folder's contents. Subdirectories are listed first with their own child counts; files within each subdirectory appear immediately below, indented with `"   -> "`. Loose files in the root of `ruta` are appended at the end.
+
+## Events
+
+### Navigation Events
+
+| Handler | Trigger | Behavior |
+|---|---|---|
+| `btnOpen_Click` | **Open** button | Opens a `FolderBrowserDialog`; calls `LoadDirectory` on confirmation. |
+| `btnBack_Click` | **Back** button | Pops `_history` and calls `LoadDirectory` with the previous path; no-op if history is empty. |
+| `btnDrives_Click` | **This PC** button or `"Este equipo"` shortcut | Clears the grid and lists all `DriveInfo.GetDrives()` entries. Pushes the current path to history first. |
+| `txtPath_KeyDown` | **Enter** key in path bar | Validates the typed path with `Directory.Exists`; calls `LoadDirectory` on success or shows an error dialog. |
+| `listBoxShortcuts_DoubleClick` | Double-click on sidebar item | Resolves the friendly label back to a path via `_shortcutPaths` and either calls `LoadDirectory` or `btnDrives_Click`. |
+
+### Grid Events
+
+| Handler | Trigger | Behavior |
+|---|---|---|
+| `dataGridView1_CellDoubleClick` | Double-click on a grid row | Navigates into a directory (pushing history) or calls `AbrirReproductor` / `Process.Start` for files. |
+| `dataGridView1_SelectionChanged` | Row selection change | Calls `MostrarContenidoGrid2` for directories; calls `_formMP3.AgregarALista` for audio files when `FormMP3` is already open. |
+
+### Module Launcher Events
+
+Each launcher follows the identical singleton guard pattern — bring to front if open, create and show if not.
+
+| Handler | Opens |
+|---|---|
+| `btnllamarFormDataBase_Click` | `FormDataBase` |
+| `btnllamarFormCorrector_Click` | `FormCorrector` |
+| `btnLlamarEditor_Click` | `FormEdit` |
+| `btnFormGrabador_Click` | `FormGrabadora` |
+
+## Related Components
+
+<CardGroup cols={2}>
+  <Card title="FormMP3" href="/reference/formmp3">
+    Audio player and playlist manager opened by Form1 for MP3, WAV, and AAC files.
+  </Card>
+  <Card title="FormMP4" href="/reference/formmp4">
+    LibVLC-backed video player opened by Form1 for MP4, AVI, MKV, and MOV files.
+  </Card>
+  <Card title="FormEditarFotos" href="/reference/form-editar-fotos">
+    Image editor and GPS map viewer opened by Form1 for JPG, PNG, and GIF files.
+  </Card>
+  <Card title="FormMP3 — AgregarALista" href="/reference/formmp3#agregaralista">
+    Called automatically by Form1 whenever an audio file is selected in the grid and FormMP3 is already visible.
+  </Card>
+</CardGroup>

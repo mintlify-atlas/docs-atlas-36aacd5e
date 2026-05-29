@@ -1,0 +1,104 @@
+---
+title: "Document Editor: Open and Edit Files of Any Format"
+sidebarTitle: "Document Editor"
+description: "Edit CSV, Excel, Word, PowerPoint, plain text, JSON, XML, and PDF files inside Explorador de Archivos without switching applications."
+---
+
+The **Document Editor** (`FormEdit`) is a multi-format file editor built into Explorador de Archivos. It routes each file type to the most appropriate control — a fully editable `DataGridView` for tabular formats, a syntax-highlighted `RichTextBox` for text-based formats, and an embedded `WebView2` browser for PDFs — and writes changes back to disk in the original format when you save.
+
+## Supported Formats
+
+| Format      | Extension(s)       | View / Edit Mode                       |
+|-------------|--------------------|----------------------------------------|
+| CSV         | `.csv`             | DataGridView (editable grid)           |
+| Excel       | `.xlsx`, `.xls`    | DataGridView (editable grid)           |
+| Word        | `.docx`, `.doc`    | RichTextBox (plain text)               |
+| PowerPoint  | `.pptx`, `.ppt`    | RichTextBox (slide text extraction)    |
+| Plain text  | `.txt`             | RichTextBox (editable)                 |
+| JSON        | `.json`            | RichTextBox (editable, syntax colours) |
+| XML         | `.xml`             | RichTextBox (editable, syntax colours) |
+| PDF         | `.pdf`             | WebView2 browser view (read-only)      |
+
+## Opening a Document
+
+<Steps>
+  <Step title="Open the Document Editor">
+    Click the **Editor** button in the main toolbar. The `FormEdit` window opens with an empty editing area.
+  </Step>
+  <Step title="Load a file">
+    Click **Load File** (`btnCargar_Click`). An `OpenFileDialog` pre-filtered to all supported extensions appears. Select any file and confirm. The window title updates to `Editor - <filename>`.
+  </Step>
+  <Step title="The file opens in the appropriate view">
+    `btnCargar_Click` reads the file extension and calls the matching loader:
+
+    | Extension         | Loader called        |
+    |-------------------|----------------------|
+    | `.csv`            | `CargarCSV()`        |
+    | `.xlsx` / `.xls`  | `CargarExcel()`      |
+    | `.docx` / `.doc`  | `CargarWord()`       |
+    | `.pptx` / `.ppt`  | `CargarPowerPoint()` |
+    | `.txt`            | `CargarTexto()`      |
+    | `.json`           | `CargarJSON()`       |
+    | `.xml`            | `CargarXML()`        |
+    | `.pdf`            | `CargarPDF()`        |
+
+    Tabular formats (CSV and Excel) display in the `DataGridView`; all other formats use the `RichTextBox`. PDF files hide the `RichTextBox` and make the `WebView2` control (`webViewPdf`) visible instead.
+  </Step>
+  <Step title="Edit content directly">
+    For grid-based formats, click any cell to edit it. New rows can be added by typing in the bottom empty row; existing rows can be deleted. For text-based formats, the `RichTextBox` is fully writable — position the cursor and type.
+  </Step>
+  <Step title="Save">
+    Click **Save** (`btnGuardar_Click`). The editor writes changes back to the original file path using the format-specific save routine (`GuardarCSV`, `GuardarExcel`, `GuardarWord`, or `GuardarTexto`). A success dialog confirms the operation.
+  </Step>
+</Steps>
+
+## CSV and Excel Editing
+
+CSV and Excel files share the same DataGridView-based editing experience.
+
+**CSV** (`CargarCSV` / `GuardarCSV`):
+- The first line of the file is treated as the header row; each comma-separated value becomes a column.
+- Rows are split on commas. Values that contain commas or double-quotes are properly escaped on save using RFC 4180 quoting (`"value with, comma"`).
+- `AllowUserToAddRows = true` and `AllowUserToDeleteRows = true` are set in `ConfigurarControles()`, so you can append and remove rows freely.
+- `AutoSizeColumnsMode` is set to `AllCells` so columns resize to fit their content.
+
+**Excel** (`CargarExcel` / `GuardarExcel`):
+- Files are parsed with `DocumentFormat.OpenXml` (`SpreadsheetDocument.Open`). The first sheet's first row is used as column headers; all subsequent rows are data rows. Shared-string-table references are resolved automatically via `GetCellValue()`.
+- The save routine works on a temp-file copy of the original to guard against partial-write corruption: it writes the new data to a temporary `.xlsx`, closes and flushes it, then atomically replaces the original. A `.backup` copy is kept during the operation and removed on success. If anything fails, the backup is restored.
+
+<Warning>
+  Excel files are loaded entirely into memory as a `DataTable`. Very large workbooks (tens of thousands of rows or many columns) may be slow to load and will consume a proportional amount of RAM. Consider splitting large files before editing.
+</Warning>
+
+## Text-Based Editing
+
+Word (`.docx`/`.doc`), plain text (`.txt`), JSON (`.json`), and XML (`.xml`) files all open in the `RichTextBox` (`rtbContenido`) with word wrap enabled.
+
+**Plain text, JSON, and XML** are read with `File.ReadAllText()` (UTF-8). JSON and XML additionally receive syntax highlighting applied by `AplicarColoreado_JSON()` and `AplicarColoreado_XML()` respectively, using `ColorearPatron()` to colour-match regex patterns against the raw text:
+
+- **JSON**: braces and brackets in amber, string keys and values in green, numbers in light blue, and `true`/`false`/`null` in orange.
+- **XML**: tag names in steel blue, attribute names in light cyan, attribute values in warm orange, and comments in muted green.
+
+The `RichTextBox` uses a dark theme (`Consolas 11 pt`, background `#1E1E1E`, foreground `#DCDCDC`) for all text-based formats, matching a code-editor aesthetic.
+
+**Word** files are read by opening the `.docx` package as a `ZipArchive`, extracting `word/document.xml`, parsing it as `XmlDocument`, and collecting the inner text of every `w:t` node. The result is plain text with no formatting.
+
+Saving a Word file reverses the process: the edited `RichTextBox` text is split on line breaks, each line becomes a `w:p`/`w:r`/`w:t` paragraph element, and the reconstructed XML replaces the `word/document.xml` entry in a temporary copy before atomically replacing the original. A `.backup` is maintained during the operation for safety.
+
+## PDF Viewing
+
+PDF files are rendered inside an embedded **Microsoft WebView2** control (`webViewPdf`). When a `.pdf` is loaded:
+
+1. `CargarPDF()` hides the `RichTextBox` and makes the `WebView2` visible.
+2. `EnsureCoreWebView2Async()` initialises the WebView2 runtime if it has not been started yet.
+3. The local file path is converted to an absolute URI (`new Uri(_currentFile).AbsoluteUri`) and passed to `CoreWebView2.Navigate()`.
+
+The PDF is rendered by the Chromium-based engine embedded in WebView2, which supports the standard PDF viewer controls (page navigation, zoom, text selection, and printing).
+
+<Note>
+  PDFs are **view-only** in the Document Editor. Clicking **Save** while a PDF is loaded shows an informational message and does not modify the file. To edit PDF content you will need a dedicated PDF editor.
+</Note>
+
+<Note>
+  PowerPoint files (`.pptx`/`.ppt`) are **read-only** in the Document Editor. The editor extracts slide text by iterating over `ppt/slides/slide*.xml` entries inside the package and collecting the text from every `a:t` node, labelling each slide in order (`--- Diapositiva 1 ---`). Layout, images, shapes, and formatting are not preserved. Clicking **Save** while a PowerPoint is loaded shows an informational message indicating that editing must be done in Microsoft PowerPoint.
+</Note>

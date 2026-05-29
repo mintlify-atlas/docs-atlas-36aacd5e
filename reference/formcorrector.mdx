@@ -1,0 +1,190 @@
+---
+title: "FormCorrector — Data Validation and Automatic Cleaning"
+sidebarTitle: "FormCorrector"
+description: "FormCorrector runs the DataPipeline to validate, infer column types, highlight cell errors, and automatically clean text, date, and numeric columns."
+---
+
+`FormCorrector` is a data quality workbench for tabular files. It accepts CSV, JSON, XML, XLSX, and DOCX inputs, routes each file through a `DataPipeline` that validates and optionally sorts rows, then uses `ColumnTypeInferrer` to detect the dominant data type of each column. Cells that contradict the inferred type are highlighted in orange (text in a numeric/date column) or red (a number in a text column). A one-click `DataCleaner.Clean` pass corrects common formatting issues, and every change is colour-coded green in the grid and logged in the owner-drawn `lstErrores` list.
+
+---
+
+## Overview
+
+The processing flow is asynchronous to keep the UI responsive:
+
+1. **Select** — `BtnSeleccionar_Click` fills `txtArchivo.Text` via `OpenFileDialog`.
+2. **Process** — `BtnProcesar_Click` runs `RunPipeline` on a background thread, then calls `_inferrer.Infer` to produce `_inference`, builds `_cellErrorIndex`, generates per-column filter `ComboBox` controls, and refreshes the grid.
+3. **Clean** — `BtnLimpiarDatos_Click` calls `DataCleaner.Clean(_validRows, typesToUse)`, replays the change log into `_cleanedCells`, re-infers types, and repaints the grid.
+4. **Edit** — Users may type directly into `dgvDatos`; `BtnGuardarCorrecciones_Click` reads the `DataTable` back into `_validRows` and re-infers types.
+5. **Export** — `BtnExportar_Click` syncs the grid with `_validRows` and calls `DataExporter.Export`.
+
+Double-buffering on the `DataGridView` is enabled at construction time via reflection to eliminate scroll ghosting.
+
+---
+
+## Key Fields
+
+| Field | Type | Purpose |
+|---|---|---|
+| `_pipeline` | `DataPipeline` | Orchestrates file reading, schema validation, optional sort, and error collection. |
+| `_inferrer` | `ColumnTypeInferrer` | Scans `_validRows` and returns per-column dominant types plus a list of `CellError` objects. |
+| `_validRows` | `IReadOnlyList<IDictionary<string, object>>` | In-memory source of truth for valid rows; updated after each clean or manual save. |
+| `_inference` | `ColumnTypeInferrer.InferenceResult?` | Latest inference result; `null` before the first successful process run. |
+| `_cellErrorIndex` | `HashSet<(int rowIndex, string columnName)>` | Provides O(1) lookup during `CellFormatting` to decide whether to colour a cell. |
+| `_cleanedCells` | `Dictionary<(int, string), string>` | Maps `(rowIndex, columnName)` → original value for every cell changed by `DataCleaner`. Used to render the green "cleaned" highlight and tooltip. |
+
+---
+
+## Methods
+
+### `BtnProcesar_Click`
+
+Asynchronous handler that orchestrates the main processing pipeline. Disables the UI, runs `RunPipeline` on a `Task`, applies type inference, builds filter controls, refreshes the grid, and updates `lblTiposError` with error counts.
+
+```csharp
+private async void BtnProcesar_Click(object sender, EventArgs e)
+```
+
+---
+
+### `RunPipeline`
+
+Executed on a background thread. Selects the correct `IFileReader` for the file extension (with content sniffing for ambiguous extensions like `.txt`), calls `reader.ReadFile(filePath)`, and passes the rows to `_pipeline.Execute(rows, orderBy)`.
+
+```csharp
+private PipelineResult RunPipeline(string filePath, string? orderBy)
+```
+
+<ParamField path="filePath" type="string">
+  Absolute path to the file to process. Must exist and be readable.
+</ParamField>
+
+<ParamField path="orderBy" type="string?">
+  Optional column name to sort rows by inside the pipeline. Taken from `txtOrdenarPor.Text`.
+</ParamField>
+
+**Returns** `PipelineResult` containing `ValidRows`, `InvalidRows`, and `ErrorLog`.
+
+---
+
+### `BuildFilterControls`
+
+Dynamically generates a `Label` + `ComboBox` pair inside `pnlFiltros` for each column in `_validRows`. ComboBoxes are populated with unique values from that column and include an `"(Todos)"` catch-all. When `_inference` is available, column headers are annotated with the inferred type (e.g. `"Edad [Numeric]"`).
+
+```csharp
+private void BuildFilterControls(
+    IReadOnlyList<IDictionary<string, object>> rows)
+```
+
+<ParamField path="rows" type="IReadOnlyList<IDictionary<string, object>>">
+  The valid rows whose column keys drive control generation.
+</ParamField>
+
+---
+
+### `RefreshGrid`
+
+Replaces the `DataGridView` data source with a fresh `DataTable` built from `rows`. Temporarily sets `AutoSizeColumnsMode` to `AllCells` then back to `None` to size columns without leaving the expensive auto-size mode active during scrolling.
+
+```csharp
+private void RefreshGrid(
+    IReadOnlyList<IDictionary<string, object>> rows)
+```
+
+<ParamField path="rows" type="IReadOnlyList<IDictionary<string, object>>">
+  Rows to display. Passing a filtered subset shows only matched records while keeping `_validRows` intact.
+</ParamField>
+
+---
+
+### `BuildErrorIndex`
+
+Converts a flat `IReadOnlyList<CellError>` into a `HashSet<(int, string)>` for O(1) lookup by `(rowIndex, columnName)` during `CellFormatting`.
+
+```csharp
+private static HashSet<(int, string)> BuildErrorIndex(
+    IReadOnlyList<CellError> errors)
+```
+
+<ParamField path="errors" type="IReadOnlyList<CellError>">
+  The cell-level error list produced by `ColumnTypeInferrer.Infer`.
+</ParamField>
+
+---
+
+### `ApplyFilters`
+
+Reads the selected value from every `ComboBox` inside `pnlFiltros` and applies an AND filter over `_validRows`.
+
+```csharp
+private IReadOnlyList<IDictionary<string, object>> ApplyFilters()
+```
+
+**Returns** the filtered subset, or `_validRows` unchanged if no filter is active.
+
+---
+
+### `EnableDoubleBuffer` *(static)*
+
+Uses reflection to set the protected `DoubleBuffered` property on a `DataGridView`, eliminating the horizontal-scroll ghosting artefact that appears with many visible columns.
+
+```csharp
+private static void EnableDoubleBuffer(DataGridView grid)
+```
+
+<ParamField path="grid" type="DataGridView">
+  The grid control to enable double buffering on. Called once per form lifetime in the constructor.
+</ParamField>
+
+---
+
+### `DgvDatos_CellFormatting`
+
+Raises on every cell paint cycle. Applies three mutually exclusive styles in priority order:
+
+1. **Green** (`Color.FromArgb(180, 230, 180)`) — cell was cleaned by `DataCleaner`; tooltip shows the original value.
+2. **Orange** (`Color.FromArgb(255, 200, 100)`) — text value where a numeric/date type was inferred.
+3. **Red** (`Color.FromArgb(255, 160, 160)`) — numeric value where a text type was inferred.
+
+```csharp
+private void DgvDatos_CellFormatting(
+    object? sender, DataGridViewCellFormattingEventArgs e)
+```
+
+---
+
+### `LstErrores_DrawItem` *(static)*
+
+Owner-draw handler for `lstErrores`. Assigns background and foreground colours by the emoji prefix of each log entry: `✅` → green, `✔` → light green, `⚠` → yellow, `✖`/`❌` → red.
+
+```csharp
+private static void LstErrores_DrawItem(
+    object? sender, DrawItemEventArgs e)
+```
+
+---
+
+## Events / Button Handlers
+
+| Handler | Trigger | Behaviour |
+|---|---|---|
+| `BtnSeleccionar_Click` | "Seleccionar" button | Opens `openFileDialog`; stores chosen path in `txtArchivo.Text`. |
+| `BtnProcesar_Click` | "Procesar" button | Async; runs `RunPipeline` + `_inferrer.Infer` on background threads, then rebuilds filter controls and refreshes the grid. |
+| `BtnLimpiarDatos_Click` | "Limpiar Datos" button | Shows `ColumnTypesForm` for user review; calls `DataCleaner.Clean`; updates `_cleanedCells`, re-infers types, repaints grid and log. |
+| `BtnGuardarCorrecciones_Click` | "Guardar Correcciones" button | Reads the edited `DataTable` back into `_validRows`, re-infers types, and repaints the grid. |
+| `BtnExportar_Click` | "Exportar" button | Syncs grid edits to `_validRows` then calls `DataExporter.Export(_validRows, filePath)`. |
+| `BtnAplicarFiltros_Click` | "Aplicar Filtros" button | Calls `ApplyFilters()` and rebinds the grid to the filtered subset. |
+| `BtnLimpiarFiltros_Click` | "Limpiar Filtros" button | Resets all filter `ComboBox` controls to index 0 and calls `RefreshGrid(_validRows)`. |
+
+---
+
+## Related Components
+
+<CardGroup cols={2}>
+  <Card title="FormDataBase" href="/reference/formdatabase">
+    Imports multi-source data from databases and files into the shared DataItem model.
+  </Card>
+  <Card title="FormEdit" href="/reference/formedit">
+    Opens and edits individual files directly without the validation pipeline.
+  </Card>
+</CardGroup>

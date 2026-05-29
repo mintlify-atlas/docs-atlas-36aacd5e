@@ -1,0 +1,123 @@
+---
+title: "MusicMetadataFetcher — Lyrics and Cover Art from APIs"
+sidebarTitle: "MusicMetadataFetcher"
+description: "MusicMetadataFetcher queries the Genius and Spotify APIs to enrich MP3 files with lyrics and album art, writing results to ID3 tags via TagLibSharp."
+---
+
+`MusicMetadataFetcher` is an instance class that combines three third-party services — Genius (lyrics), Spotify (album art), with iTunes and Last.fm as automatic fallbacks — to enrich local MP3 files with embedded metadata. After downloading lyrics and cover art, it writes them directly to the file's ID3 tags using [TagLib#](https://github.com/mono/taglib-sharp). If the file is currently locked by the media player, up to three write attempts are made before the data is retained in static properties for the UI to consume without modifying the file.
+
+---
+
+## Constructor
+
+```csharp
+public MusicMetadataFetcher(
+    string geniusToken,
+    string spotifyClientId,
+    string spotifyClientSecret
+)
+```
+
+<ParamField path="geniusToken" type="string" required>
+  A valid Genius API access token. Obtain one from [genius.com/api-clients](https://genius.com/api-clients). Passed as the `Authorization: Bearer {token}` header on every Genius request. Throws `ArgumentNullException` if `null`.
+</ParamField>
+
+<ParamField path="spotifyClientId" type="string" required>
+  The Client ID of your Spotify application from the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard). Used to obtain Client Credentials OAuth tokens. Throws `ArgumentNullException` if `null`.
+</ParamField>
+
+<ParamField path="spotifyClientSecret" type="string" required>
+  The Client Secret paired with `spotifyClientId`. Combined with the ID in a Base64-encoded `Authorization: Basic` header for token requests. Throws `ArgumentNullException` if `null`.
+</ParamField>
+
+<Note>
+  Spotify tokens are cached in memory and reused until one minute before expiry (typically 3,599 seconds after issue). A new token is fetched transparently on the next request after expiry.
+</Note>
+
+---
+
+## ActualizarMetadatosDelArchivoAsync()
+
+The primary public method. Orchestrates the full fetch-and-write lifecycle for a single MP3 file.
+
+```csharp
+public async Task<bool> ActualizarMetadatosDelArchivoAsync(string rutaArchivo)
+```
+
+<ParamField path="rutaArchivo" type="string" required>
+  Absolute path to the `.mp3` file to enrich. Existing ID3 tags are read first via `TagLib.File.Create` to extract artist, title, and album. If the title tag is missing or equals the artist, the filename is parsed (splitting on ` - `) to derive artist and title.
+</ParamField>
+
+### Returns
+
+<ResponseField name="bool" type="Task<bool>">
+  Returns `true` if at least one of lyrics or cover art was obtained — regardless of whether it was written to disk or only held in memory (file-lock scenario). Returns `false` if both Genius and all cover art services returned nothing.
+</ResponseField>
+
+### Behavior
+
+1. Clears `UltimaLetraDescargada` and `UltimaPortadaDescargada` to `null`.
+2. Extracts artist, title, and album from existing ID3 tags (with filename fallback).
+3. Calls Genius API for lyrics; calls Spotify → iTunes → Last.fm in order for cover art.
+4. Stores results in `UltimaLetraDescargada` and `UltimaPortadaDescargada`.
+5. Attempts to open the file with `FileShare.ReadWrite` and writes only missing fields:
+   - Lyrics are written only if `file.Tag.Lyrics` is currently empty.
+   - Cover art is written only if `file.Tag.Pictures.Length == 0`.
+6. On `IOException` (file locked), retries up to **3 times** with a **300 ms** delay. After all retries are exhausted the method still returns `true` — the data remains available in the static properties.
+
+```csharp
+var fetcher = new MusicMetadataFetcher(
+    geniusToken: "YOUR_GENIUS_TOKEN",
+    spotifyClientId: "YOUR_SPOTIFY_CLIENT_ID",
+    spotifyClientSecret: "YOUR_SPOTIFY_CLIENT_SECRET"
+);
+
+bool updated = await fetcher.ActualizarMetadatosDelArchivoAsync(@"C:\Music\song.mp3");
+
+if (updated)
+{
+    // Lyrics and/or art were found; display in UI even if write to disk failed
+    lyricsTextBox.Text = MusicMetadataFetcher.UltimaLetraDescargada ?? "(no lyrics)";
+
+    if (MusicMetadataFetcher.UltimaPortadaDescargada is { } coverBytes)
+    {
+        using var ms = new MemoryStream(coverBytes);
+        albumArtBox.Image = Image.FromStream(ms);
+    }
+}
+```
+
+---
+
+## Static Cache Properties
+
+Both properties are `null` until `ActualizarMetadatosDelArchivoAsync` successfully fetches data, and are reset to `null` at the start of each call.
+
+<ResponseField name="UltimaLetraDescargada" type="static string?">
+  The full lyrics text most recently downloaded from Genius, or `null` if the last fetch returned nothing. The Genius scraper targets `div[class*="Lyrics__Container"]` elements, falling back to the legacy `div.lyrics` container for older songs. HTML entities are decoded before storage.
+</ResponseField>
+
+<ResponseField name="UltimaPortadaDescargada" type="static byte[]?">
+  The raw JPEG bytes of the album cover most recently downloaded, or `null`. Sourced from Spotify first, then iTunes (scaled to 600×600), then Last.fm. These bytes can be passed directly to a `MemoryStream` → `Image.FromStream()` for display, or embedded into an ID3 tag as `PictureType.FrontCover`.
+</ResponseField>
+
+---
+
+## Cover Art Fallback Chain
+
+| Priority | Service | Notes |
+|---|---|---|
+| 1 | **Spotify** | Search by `{artist} {album}`, extract first `.jpg` URL from album results |
+| 2 | **iTunes** | Search Apple Music, upscale artwork from `100x100` to `600x600` |
+| 3 | **Last.fm** | Scrape cover `<img>` from album page HTML |
+
+Results from successful fetches are cached in a static `Dictionary<string, string>` keyed by `"{artist}_{album}".ToLower()` to avoid redundant network requests within the same application session.
+
+<CardGroup cols={2}>
+  <Card title="PlaylistGlobal" href="/reference/playlist-global">
+    Shared in-memory playlist state used alongside the MP3 player
+  </Card>
+  <Card title="ImageProcessor" href="/reference/image-processor">
+    Bitmap filter utilities for images displayed in the application
+  </Card>
+</CardGroup>

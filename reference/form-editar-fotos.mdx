@@ -1,0 +1,225 @@
+---
+title: "FormEditarFotos — Image Editor and GPS Map Viewer"
+sidebarTitle: "FormEditarFotos"
+description: "FormEditarFotos provides bitmap editing with filters, brush drawing, crop, brightness/contrast/saturation adjustments, EXIF GPS extraction, and WebView2 map display."
+---
+
+`FormEditarFotos` is the image-editing module of Explorador de Archivos. It loads any common raster format into a `Bitmap`, exposes a non-destructive editing pipeline (a separate *baseline* and *working* bitmap), and renders the result in a `PictureBox` (`canvas`) with `SizeMode = Zoom`. When the image contains EXIF GPS metadata, the form extracts the coordinates with [MetadataExtractor](https://github.com/drewnoakes/metadata-extractor-dotnet) and renders an embedded Google Maps view in a WebView2 control (`webMapa`). The form is opened and pre-loaded by `Form1` via the `AbrirImagen` public method.
+
+## Overview
+
+The editing pipeline separates concerns with two `Bitmap` fields:
+
+- `loadedBitmap` — the original image as loaded from disk, never modified. Used as the source for brightness/contrast/saturation recalculations via `ImageProcessor.Adjust`.
+- `workingBitmap` — the displayed, in-progress version. Receives brush strokes, crop results, filters (grayscale, sepia, invert), and adjustment results.
+
+**Brush drawing** is handled through mouse events directly on `canvas`. The drawing mode and crop mode are mutually exclusive flags (`isDrawing`, `isCropping`). When crop mode is active, a dashed red selection rectangle is painted in `canvas_Paint`; on mouse-up the rectangle is mapped from control coordinates to image coordinates using a `GetImageDisplayRectangle` helper before calling `Bitmap.Clone`.
+
+GPS data round-trips fully: EXIF coordinates are read on open, displayed in `txtCoordenadas`, rendered in the embedded map, and — for JPEG saves — written back into the output file's EXIF properties using reflection-constructed `PropertyItem` instances.
+
+## Constructor
+
+```csharp
+public FormEditarFotos()
+```
+
+Takes no parameters. Calls `InitializeComponent()` and registers a `FormClosing` handler that disposes both `loadedBitmap` and `workingBitmap` to prevent GDI+ handle leaks.
+
+## Public Methods
+
+### `AbrirImagen`
+
+```csharp
+public void AbrirImagen(string rutaArchivo)
+```
+
+The primary public entry point called by `Form1` when the user double-clicks an image file in the file browser. Loads the file as a `Bitmap`, wires the path into `Bitmap.Tag` (required by `ObtenerCoordenadas`), calls `LoadBitmap`, and then attempts EXIF GPS extraction.
+
+<ParamField path="rutaArchivo" type="string" required>
+  Absolute path of the image file to open. Accepted formats include BMP, DIB, JPG, JPEG, PNG, GIF, TIF, TIFF, and ICO — any format supported by `System.Drawing.Bitmap`.
+</ParamField>
+
+**GPS extraction flow:**
+
+1. `ObtenerCoordenadas(loaded)` uses `ImageMetadataReader.ReadMetadata` from MetadataExtractor to locate a `GpsDirectory`.
+2. If found, `GpsDirectory.GetGeoLocation()` provides `Latitude` and `Longitude`.
+3. The formatted coordinate pair is written to `txtCoordenadas.Text`.
+4. `MostrarMapa(lat, lon)` is called asynchronously to load the WebView2 map.
+5. If no GPS data exists, `txtCoordenadas.Text` is set to `"No se encontraron datos GPS."`.
+
+On any exception, a `MessageBox` is shown and the form state is unchanged.
+
+## Private Key Methods
+
+### `LoadBitmap`
+
+```csharp
+private void LoadBitmap(Bitmap bmp)
+```
+
+Sets the baseline and working bitmaps. Disposes previous instances, assigns `loadedBitmap = bmp`, clones it into `workingBitmap`, assigns `canvas.Image = workingBitmap`, and resets all three adjustment sliders (`trackBrightness`, `trackContrast`, `trackSaturation`) to `0`.
+
+---
+
+### `ReplaceBitmap`
+
+```csharp
+private void ReplaceBitmap(Bitmap newBmp)
+```
+
+Replaces only `workingBitmap` with `newBmp` and updates `canvas.Image`. Does **not** touch `loadedBitmap`, preserving the revert baseline.
+
+---
+
+### `ObtenerCoordenadas`
+
+```csharp
+private (double lat, double lon)? ObtenerCoordenadas(Image img)
+```
+
+Extracts EXIF GPS data from the image file using MetadataExtractor. Returns `null` if the image has no path tag, if no `GpsDirectory` is present in the metadata, or if `GetGeoLocation()` returns null.
+
+<ParamField path="img" type="System.Drawing.Image" required>
+  The loaded image whose `Tag` property must be set to the original absolute file path string. The path is passed to `ImageMetadataReader.ReadMetadata`.
+</ParamField>
+
+<ResponseField name="(double lat, double lon)?" type="nullable tuple">
+  A value tuple with `lat` (latitude, decimal degrees) and `lon` (longitude, decimal degrees). Returns `null` when GPS data is unavailable or on any exception.
+</ResponseField>
+
+---
+
+### `MostrarMapa`
+
+```csharp
+private async void MostrarMapa(double lat, double lon)
+```
+
+Awaits `webMapa.EnsureCoreWebView2Async()` to guarantee the WebView2 runtime is ready, then calls `NavigateToString` with a minimal HTML document containing a full-page Google Maps `<iframe>` URL built from the supplied coordinates.
+
+<ParamField path="lat" type="double" required>
+  Latitude in decimal degrees (negative = South).
+</ParamField>
+
+<ParamField path="lon" type="double" required>
+  Longitude in decimal degrees (negative = West).
+</ParamField>
+
+---
+
+### `ApplyProcessor`
+
+```csharp
+private void ApplyProcessor(Func<Bitmap, Bitmap> op)
+```
+
+Generic filter applier. Clones `workingBitmap` into a temporary, invokes `op` on the clone, and calls `ReplaceBitmap` with the result. Used by grayscale, sepia, and invert buttons to keep individual filter logic in the `ImageProcessor` static class.
+
+---
+
+### `TrackBar_Scroll` (Adjustments)
+
+```csharp
+private void TrackBar_Scroll(object? sender, EventArgs e)
+```
+
+Reads the current values of `trackBrightness`, `trackContrast`, and `trackSaturation` (each `−100` to `+100`) and calls `ImageProcessor.Adjust(loadedBitmap, b, c, s)`. The result replaces `workingBitmap`. Because the adjustment is always applied to `loadedBitmap`, multiple slider changes compose independently without quality degradation.
+
+---
+
+### `GetImageDisplayRectangle`
+
+```csharp
+private Rectangle GetImageDisplayRectangle(Image img, PictureBox pic)
+```
+
+Calculates the actual bounding rectangle of the displayed image inside a `PictureBox` set to `SizeMode = Zoom`. This is necessary for converting mouse coordinates (in control space) to pixel coordinates in the bitmap before drawing or cropping.
+
+<ParamField path="img" type="System.Drawing.Image" required>
+  The image currently displayed in the `PictureBox`.
+</ParamField>
+
+<ParamField path="pic" type="System.Windows.Forms.PictureBox" required>
+  The `PictureBox` control (`canvas`) whose client rectangle is used for the aspect-ratio calculation.
+</ParamField>
+
+<ResponseField name="Rectangle" type="System.Drawing.Rectangle">
+  The pixel rectangle inside the `PictureBox` client area where the image is actually rendered (letterboxed/pillarboxed to preserve aspect ratio).
+</ResponseField>
+
+---
+
+### `SaveImageWithGpsData`
+
+```csharp
+private void SaveImageWithGpsData(Bitmap bmp, string filePath, double latitude, double longitude)
+```
+
+Saves a JPEG copy of `bmp` to `filePath` with EXIF GPS tags written via reflection-constructed `PropertyItem` objects (IDs `0x0001`–`0x0004` for lat/lon reference and value). GPS rational values are encoded by `ConvertCoordinateToExifFormat` as three 8-byte rationals (degrees/1, minutes/1, seconds×1000/1000). Only called when `lat ≠ 0 || lon ≠ 0` and the save format is JPEG.
+
+---
+
+### `TryParseCoordinates` / `TryParseWithSymbols`
+
+```csharp
+private bool TryParseCoordinates(string input, out double latitude, out double longitude)
+private bool TryParseWithSymbols(string input, out double latitude, out double longitude)
+```
+
+Two-stage coordinate parser used when the user manually types into `txtCoordenadas`. `TryParseWithSymbols` handles formatted input like `"26.79692° N, 101.42861° O"` by splitting on degree symbols and directional letters. `TryParseCoordinates` falls back to simple comma-separated decimal parsing (e.g. `"26.79692, 101.42861"`). Both validate the output against legal lat/lon ranges before returning `true`.
+
+## Events
+
+### File Operations
+
+| Handler | Control | Behavior |
+|---|---|---|
+| `btnOpen_Click` | Open button | Shows a filtered `OpenFileDialog`; loads the selected file via `LoadBitmap`, then attempts GPS extraction and map display. |
+| `btnSave_Click` | Save button | Shows a `SaveFileDialog` (PNG/JPEG). For JPEG files with valid coordinates, calls `SaveImageWithGpsData`; otherwise calls `workingBitmap.Save` directly. |
+| `btnRevert_Click` | Revert button | Clones `loadedBitmap` back into `workingBitmap`, resets all sliders to `0`, and resets the brush size to `5`. |
+
+### Image Adjustments
+
+| Handler | Control | Behavior |
+|---|---|---|
+| `TrackBar_Scroll` | Brightness / Contrast / Saturation sliders | Re-applies all three adjustments to `loadedBitmap` via `ImageProcessor.Adjust` and updates `workingBitmap`. |
+| `btnGray_Click` | Grayscale button | Calls `ImageProcessor.ApplyGrayscale` on a clone of `workingBitmap`. |
+| `btnSepia_Click` | Sepia button | Calls `ImageProcessor.ApplySepia` on a clone of `workingBitmap`. |
+| `btnInvert_Click` | Invert button | Calls `ImageProcessor.InvertColors` on a clone of `workingBitmap`. |
+
+### Drawing and Crop
+
+| Handler | Control | Behavior |
+|---|---|---|
+| `btnBrush_Click` | Brush button | Toggles `isDrawing`; updates button text to reflect the current mode. |
+| `btnCrop_Click` | Crop button | Toggles `isCropping`; clears `cropRect` when deactivated. |
+| `btnColor_Click` | Color picker | Opens a `ColorDialog` and sets `brushColor`; updates `panelColorPreview.BackColor`. |
+| `trackBrushSize_Scroll` | Brush size slider | Sets `brushSize` and updates `lblBrushSizeValue`. |
+| `canvas_MouseDown` | Canvas | In draw mode, calls `DrawAt(e.Location)` on left-click. In crop mode, initializes `cropStart` and `cropRect`. |
+| `canvas_MouseMove` | Canvas | In draw mode with left button held, draws a smooth anti-aliased line from `lastPoint` to `e.Location`. In crop mode, updates `cropRect` for rubber-band display. |
+| `canvas_MouseUp` | Canvas | In crop mode, maps `cropRect` from control to image coordinates and performs `Bitmap.Clone` to produce the cropped working bitmap. |
+| `canvas_Paint` | Canvas paint | Overlays the dashed red crop selection rectangle when `cropRect` is non-empty. |
+
+### GPS Map
+
+| Handler | Control | Behavior |
+|---|---|---|
+| `btnVer_Click` | Show map button | Re-extracts GPS from `loadedBitmap`; falls back to parsing `txtCoordenadas.Text` manually; calls `MostrarMapa` on success. |
+| `btnMostrarUbicacion_Click` | Open in browser button | Launches Google Maps in the default browser using the stored `lat` / `lon`. Parses `txtCoordenadas.Text` as a fallback if the fields are zero. |
+
+## Related Components
+
+<CardGroup cols={2}>
+  <Card title="Form1" href="/reference/form1">
+    Host shell that opens FormEditarFotos and calls AbrirImagen when the user double-clicks an image file.
+  </Card>
+  <Card title="FormMP3" href="/reference/formmp3">
+    Audio player module that runs concurrently with FormEditarFotos when media files of different types are opened.
+  </Card>
+  <Card title="FormMP4" href="/reference/formmp4">
+    Video player module — the other media child form managed through the same singleton-per-instance pattern in Form1.
+  </Card>
+  <Card title="Form1 — AbrirReproductor" href="/reference/form1#abrirreproductor">
+    The dispatch method in Form1 that routes image files to FormEditarFotos.
+  </Card>
+</CardGroup>

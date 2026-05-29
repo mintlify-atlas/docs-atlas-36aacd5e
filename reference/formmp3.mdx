@@ -1,0 +1,234 @@
+---
+title: "FormMP3 — Audio Player and Playlist Manager"
+sidebarTitle: "FormMP3"
+description: "FormMP3 provides NAudio-backed MP3/WAV/AAC playback with a persistent playlist, shuffle, loop, ID3 tag editing, and Genius/Spotify metadata enrichment."
+---
+
+`FormMP3` is the full-featured audio module of Explorador de Archivos. It is driven by the [NAudio](https://github.com/naudio/NAudio) library (`WaveOutEvent` + `AudioFileReader`) and maintains a single shared playlist through the static `PlaylistGlobal` registry so that both `Form1` and `FormMP3` stay in sync regardless of which one triggers playback. Metadata — lyrics and album art — is fetched asynchronously from the Genius and Spotify APIs via `MusicMetadataFetcher`, and ID3 tags are read and written with TagLib#.
+
+## Overview
+
+`FormMP3` presents a `ListBox` (`lstLista`) rendered in owner-draw mode so each item displays the track number, filename, and duration. A `DataGridView` beside the list shows extended file properties (name, artist, album, size, sample rate, etc.) sourced from both `FileInfo` and `AudioFileReader`. A `PictureBox` (`pictureBoxAlbum`) shows the embedded album art or a default disc image. A secondary `ListBox` (`listBoxLetras`) displays song lyrics line-by-line after they are fetched from the Genius API.
+
+Playback state — the full playlist and current playback position — is serialized to a JSON file under `%APPDATA%\MiReproductor\playlist.json` and is restored automatically the next time the form is loaded.
+
+The form supports three mutually exclusive playback modes:
+
+| Mode | Flag | Visual indicator |
+|---|---|---|
+| Sequential (default) | — | No highlight |
+| Loop (`isLooping`) | `pictLoop` → blue background | Repeats current track |
+| Shuffle (`isShuffle`) | `pictRandom` → blue background | Uses `Desordenador`-generated random order |
+
+## Constructor
+
+```csharp
+public FormMP3()
+```
+
+Takes no parameters. During initialization it:
+
+1. Sets `timer1.Interval = 500` and starts the tick loop used to update the seek bar and handle auto-advance.
+2. Configures `lstLista` for owner-draw mode and wires the custom `DrawItem` delegate.
+3. Creates the state-persistence directory (`%APPDATA%\MiReproductor`) if it does not already exist.
+4. Attempts to load a default disc image from a local path into `pictureBoxAlbum`.
+5. Instantiates `MusicMetadataFetcher` with hard-coded Genius and Spotify credentials, assigning it to both `_metadataFetcher` and `_musicFetcher`.
+
+## Public Methods
+
+### `AgregarYReproducir`
+
+```csharp
+public void AgregarYReproducir(string rutaArchivo)
+```
+
+The primary entry point called by `Form1` when the user double-clicks an audio file. Adds the track to `lstLista` only if it is not already present (case-insensitive path comparison), then selects it and immediately begins playback via `ReproducirCancion`.
+
+<ParamField path="rutaArchivo" type="string" required>
+  Absolute path of the audio file to add and play. The method silently returns if the path is null, empty, or does not exist on disk.
+</ParamField>
+
+**Behavior summary:**
+
+- If the file is **not** in the list → creates a `Cancion` object, appends it, selects the new last item, and calls `ReproducirCancion`.
+- If the file **is** already in the list → selects the existing `Cancion` item and calls `ReproducirCancion`.
+- Calls `UpdatePlaylistDisplay()` after any list modification.
+
+---
+
+### `AgregarALista`
+
+```csharp
+public void AgregarALista(string rutaArchivo)
+```
+
+Adds a track to the playlist silently — without changing the currently playing track. Called by `Form1` on `dataGridView1_SelectionChanged` whenever `FormMP3` is already open and the selected file is an audio file.
+
+<ParamField path="rutaArchivo" type="string" required>
+  Absolute path of the audio file to add. Accepted extensions are `.mp3`, `.wav`, `.aac`, `.flac`, and `.ogg`; any other extension is rejected immediately. Duplicate paths (case-insensitive) are also silently ignored.
+</ParamField>
+
+---
+
+### `ActualizarPlaylist`
+
+```csharp
+public void ActualizarPlaylist()
+```
+
+Synchronizes `lstLista` with the current state of `PlaylistGlobal`. Clears the list box and re-adds every `Cancion` returned by `PlaylistGlobal.ObtenerPlaylist()`, then calls `UpdatePlaylistDisplay()` to force a redraw. Called automatically on `FormMP3_Load` and may be called externally whenever the global playlist changes.
+
+---
+
+### `ReproducirCancionActual`
+
+```csharp
+public void ReproducirCancionActual()
+```
+
+Reads the current track from `PlaylistGlobal.ObtenerCancionActual()`, locates its index in `lstLista` by path comparison, selects that index, and calls `ReproducirCancion`. Used to resume the track that was active before `FormMP3` was closed and re-opened.
+
+---
+
+### `CerrarCompletamente`
+
+```csharp
+public void CerrarCompletamente()
+```
+
+Performs a clean teardown of all audio resources. Must be called by `Form1`'s `FormClosing` handler before the application exits.
+
+**Teardown sequence:**
+
+1. `GuardarEstado()` — serializes the current playlist and playback position to JSON.
+2. Stops and disposes `outputDevice` (`WaveOutEvent`), setting the field to `null`.
+3. Disposes `audioFile` (`AudioFileReader`), setting the field to `null`.
+4. Stops and disposes `timer1`, setting the field to `null`.
+
+## Private Key Methods
+
+### `ReproducirCancion`
+
+```csharp
+private async void ReproducirCancion(Cancion cancion)
+```
+
+Core playback routine. Stops and disposes any existing `outputDevice`/`audioFile` pair, then creates fresh `AudioFileReader` and `WaveOutEvent` instances for the given `Cancion`, calls `outputDevice.Play()`, and updates `lblName`. Immediately calls `VerPropiedades` and `MostrarPortadaDesdeMP3` for synchronous UI refresh, then awaits `_musicFetcher.ActualizarMetadatosDelArchivoAsync` in the background to fetch lyrics (shown in `listBoxLetras`) and updated album art (shown in `pictureBoxAlbum`).
+
+---
+
+### `GuardarEstado` / `CargarEstado`
+
+```csharp
+private void GuardarEstado()
+private void CargarEstado()
+```
+
+Serialize and deserialize a `Reproduccion` object to/from `%APPDATA%\MiReproductor\playlist.json` using `System.Text.Json`. `GuardarEstado` also updates `PlaylistGlobal` to reflect the current list before writing. `CargarEstado` restores the playlist, seeks to the saved position, and leaves playback **paused**.
+
+---
+
+### `RecalcularShuffle`
+
+```csharp
+private void RecalcularShuffle()
+```
+
+Rebuilds `ordenAleatorio` using a `Desordenador` instance, ensuring the currently playing track is placed first in the shuffled order. Resets `indiceShuffle` to `0`. Disables shuffle and clears the `pictRandom` highlight if the playlist is empty.
+
+---
+
+### `VerPropiedades`
+
+```csharp
+private void VerPropiedades(Cancion cancion)
+```
+
+Populates `dataGridView1` with combined metadata from `FileInfo`, `AudioFileReader` (duration, sample rate), and TagLib# (artist, album). Called each time a new track begins playing.
+
+---
+
+### `MostrarPortadaDesdeMP3`
+
+```csharp
+private void MostrarPortadaDesdeMP3(Cancion cancion)
+```
+
+Opens the audio file with TagLib# and extracts the first embedded picture. Converts the raw bytes to a `MemoryStream`, creates an `Image` from the stream, disposes the previous `pictureBoxAlbum.Image`, and assigns the new one. Falls back to the default disc image on any error or when no embedded picture is present.
+
+---
+
+### `MostrarLetraEnListBox`
+
+```csharp
+private void MostrarLetraEnListBox(Cancion cancion)
+```
+
+Reads the `Lyrics` tag from the audio file via TagLib# and splits it on `\r\n`, `\r`, and `\n`. Each line is added as a separate item to `listBoxLetras`. Displays `"(Sin letra disponible)"` when the tag is empty.
+
+---
+
+### `UpdatePlaylistDisplay`
+
+```csharp
+private void UpdatePlaylistDisplay()
+```
+
+Calls `lstLista.Refresh()` to force the owner-draw `DrawItem` delegate to re-render every visible row. This is needed because `ListBox` does not automatically invalidate when item data changes externally.
+
+## Events
+
+### Playback Controls
+
+| Handler | Control | Behavior |
+|---|---|---|
+| `pictPause_Click` | Play/Pause button | Toggles `outputDevice` between `Play()` and `Pause()`. If no audio is loaded, plays the currently selected list item. |
+| `pictNext_Click` | Next button | In sequential mode advances one index (wraps to 0). In shuffle mode advances `indiceShuffle` through `ordenAleatorio`. |
+| `pictBack_Click` | Previous button | In sequential mode retreats one index (wraps to last). In shuffle mode decrements `indiceShuffle` (clamps at 0). |
+| `pictReset_Click` | Restart button | Sets `audioFile.CurrentTime = TimeSpan.Zero` and resumes if the track was playing. |
+| `pictPass_Click` | Skip forward | Advances `audioFile.CurrentTime` by 5 seconds. |
+| `pictDelay_Click` | Skip back | Rewinds `audioFile.CurrentTime` by 5 seconds (clamps to zero). |
+| `pictLoop_Click` | Loop button | Toggles `isLooping`; disables shuffle if both were active. |
+| `pictRandom_Click` | Shuffle button | Toggles `isShuffle`; calls `RecalcularShuffle()` on activation; disables loop if both were active. |
+
+### Seek and Volume
+
+| Handler | Control | Behavior |
+|---|---|---|
+| `trackDuracion_Scroll` | Seek bar | Sets `audioFile.CurrentTime` to `TimeSpan.FromSeconds(trackDuracion.Value)`. |
+| `trackVolumen_Scroll` | Volume bar | Sets `audioFile.Volume` to `trackVolumen.Value / 100f`. |
+
+### Playlist Management
+
+| Handler | Trigger | Behavior |
+|---|---|---|
+| `listBox1_DoubleClick` | Double-click on list item | Calls `ReproducirCancion` for the selected `Cancion`. |
+| `pictSearch_Click` | Add files button | Opens a multi-select `OpenFileDialog` filtered to audio formats; adds non-duplicate files to `lstLista`. |
+| `btnEliminar_Click` | Remove button | Removes the selected item; if it was playing, starts the next track or clears the UI when the list becomes empty. |
+| `btnDeleteList_Click` | Clear list button | Removes all items and resets all UI labels and the seek bar. |
+| `btnSavePlaylist_Click` | Export button | Saves the current list to an M3U file in a user-chosen folder. |
+| `btnEdit_Click` | Edit tags button | Pauses and releases the current file, opens `FrmEditarCancion` as a dialog, then re-plays from the saved position. |
+| `pictSearchTxt_Click` | Text search button | Searches `lstLista` from the bottom for an item whose text starts with `txtSearch.Text` (case-insensitive); selects the first match. |
+
+### Timer
+
+| Handler | Interval | Behavior |
+|---|---|---|
+| `timer1_Tick` | 500 ms | Updates `trackDuracion`, `label3` (current time), `label2` (total time), and `label4` (position in list). When the track ends, triggers loop restart, shuffle advance, or sequential advance depending on the active mode. |
+
+## Related Components
+
+<CardGroup cols={2}>
+  <Card title="Form1" href="/reference/form1">
+    Host shell that instantiates FormMP3, calls AgregarYReproducir on double-click, and calls CerrarCompletamente on application exit.
+  </Card>
+  <Card title="FormMP4" href="/reference/formmp4">
+    Video player module — the video counterpart opened alongside FormMP3 for non-audio media.
+  </Card>
+  <Card title="FormEditarFotos" href="/reference/form-editar-fotos">
+    Image editor opened by Form1 for picture files while FormMP3 handles audio concurrently.
+  </Card>
+  <Card title="Cancion Model" href="/reference/form1">
+    Simple POCO with `Nombre` and `Ruta` string properties used throughout the playlist pipeline.
+  </Card>
+</CardGroup>

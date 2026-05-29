@@ -1,0 +1,221 @@
+---
+title: "FormGrabadora — Audio, Screen, and Webcam Recorder"
+sidebarTitle: "FormGrabadora"
+description: "FormGrabadora records microphone audio, screen capture, or DirectShow webcam footage using NAudio, AForge, and FFMpeg. Output is saved to %LocalAppData%/Grabaciones."
+---
+
+`FormGrabadora` is a multimedia recorder that supports three distinct capture modes selectable at runtime: **audio-only** (WAV output via NAudio), **screen capture + audio** (MP4 output via FFmpeg), and **DirectShow webcam + audio** (MP4 output via FFmpeg and AForge.Video). A live preview `PictureBox` is shown during video modes. All recordings land in `%LocalAppData%\Grabaciones`, which the form creates on first launch. Video is encoded by spawning an FFmpeg child process that consumes PNG frame sequences plus a temporary WAV audio track.
+
+---
+
+## Overview
+
+On construction the form calls four initialisation methods in sequence:
+
+1. `InitializeRecordingsFolder` — ensures `%LocalAppData%\Grabaciones` exists.
+2. `InitializeRecorder` — creates the `Stopwatch`, `_videoFrames` list, two `Timer` instances (recording clock and frame capture), and enumerates audio devices into `cmbAudioDevices`.
+3. `CreatePreviewBox` — dynamically adds a `PictureBox` (550 × 420 px) that shows the live camera or screen frame.
+4. `InitializeCamera` — enumerates DirectShow video devices into `_videoDevices` and initialises `_cameraTimer`.
+
+Mode state is held in two boolean flags: `_isAudioOnly` (default `true`) and `_useCameraInsteadOfScreen`. `BtnToggleMode_Click` and `BtnToggleCameraMode_Click` toggle these flags when no recording is active.
+
+---
+
+## Key Fields
+
+| Field | Type | Purpose |
+|---|---|---|
+| `_waveInEvent` | `WaveInEvent` | NAudio microphone capture session. `WaveFormat` is fixed at 44 100 Hz, 16-bit, stereo. |
+| `_waveFileWriter` | `WaveFileWriter` | NAudio writer flushed on every `DataAvailable` event. For video modes this targets a temp path; for audio-only it targets the final WAV in `_recordingsFolder`. |
+| `_videoFrames` | `List<Bitmap>` | Frame buffer accumulated during screen/camera recording. Consumed by `SaveVideoWithFFmpeg` then disposed. |
+| `_timerVideoCapture` | `Timer` | Fires at `1000 / VIDEO_FPS` ms (≈ 33 ms) and calls `TimerVideoCapture_Tick` to screenshot the primary screen. |
+| `_timerRecordingTime` | `Timer` | Fires every 1 000 ms to update `lblRecordingTime` with `HH:MM:SS` elapsed. |
+| `_stopwatch` | `Stopwatch` | High-resolution wall-clock timer used to compute the elapsed time displayed in the label. |
+| `_isAudioOnly` | `bool` | `true` → audio-only mode; `false` → video mode (screen or camera). Default: `true`. |
+| `_useCameraInsteadOfScreen` | `bool` | When `_isAudioOnly` is `false`, selects webcam (`true`) over screen capture (`false`). |
+| `_isSavingVideo` | `bool` | Set during the async FFmpeg encoding pass; prevents starting a new recording or closing the form prematurely. |
+| `_recordingsFolder` | `static string` | Resolved once in `InitializeRecordingsFolder`; equals `Path.Combine(Environment.SpecialFolder.LocalApplicationData, "Grabaciones")`. |
+| `_ffmpegPath` | `static readonly string` | Relative path `ffmpeg\bin\ffmpeg.exe` under `AppDomain.CurrentDomain.BaseDirectory`. |
+| `_videoDevices` | `FilterInfoCollection` | AForge DirectShow enumeration of installed video capture devices. |
+| `_videoSource` | `VideoCaptureDevice` | AForge capture device; started in `StartCameraRecording` and stopped in `StopRecording`. |
+| `VIDEO_WIDTH` | `const int = 1280` | Target frame width for screen capture bitmaps. |
+| `VIDEO_HEIGHT` | `const int = 720` | Target frame height for screen capture bitmaps. |
+| `VIDEO_FPS` | `const int = 30` | Target frame rate; governs both the capture timer interval and the FFmpeg `-framerate` argument. |
+| `AUDIO_SAMPLE_RATE` | `const int = 44100` | PCM sample rate used for `WaveFormat` in video recording modes. |
+
+---
+
+## Methods
+
+### `InitializeRecordingsFolder`
+
+Creates `%LocalAppData%\Grabaciones` if it does not exist. Falls back to `%TEMP%\Grabaciones` on permission errors.
+
+```csharp
+private void InitializeRecordingsFolder()
+```
+
+---
+
+### `InitializeRecorder`
+
+Creates the `Stopwatch`, instantiates `_videoFrames`, configures the two `Timer` objects, and populates `cmbAudioDevices` by calling `RefreshAudioDevices`.
+
+```csharp
+private void InitializeRecorder()
+```
+
+---
+
+### `CreatePreviewBox`
+
+Dynamically allocates and adds a `PictureBox` to the form at design coordinates (340, 60), 550 × 420 px, `SizeMode = Zoom`, with a black background. Brought to front after adding.
+
+```csharp
+private void CreatePreviewBox()
+```
+
+---
+
+### `InitializeCamera`
+
+Enumerates DirectShow video devices via `FilterInfoCollection(FilterCategory.VideoInputDevice)` and initialises `_cameraTimer` with a 33 ms interval.
+
+```csharp
+private void InitializeCamera()
+```
+
+---
+
+### `StartAudioRecording`
+
+Configures `_waveInEvent` with the device selected in `cmbAudioDevices` at 44 100 Hz / 16-bit / stereo, creates a `WaveFileWriter` targeting a timestamped WAV file in `_recordingsFolder`, starts recording, and starts `_timerRecordingTime`.
+
+```csharp
+private void StartAudioRecording()
+```
+
+---
+
+### `StartVideoRecording`
+
+Creates a 1280 × 720 `Bitmap` frame buffer and a `Graphics` context for screen capture, opens a temporary WAV file for audio, starts both `_waveInEvent` and `_timerVideoCapture`, and updates the status label.
+
+```csharp
+private void StartVideoRecording()
+```
+
+---
+
+### `StartCameraRecording`
+
+Instantiates `VideoCaptureDevice` from `_videoDevices[0]`, subscribes `VideoSource_NewFrame`, opens a temporary WAV file, starts the camera, `_waveInEvent`, `_timerRecordingTime`, and `_cameraTimer`.
+
+```csharp
+private void StartCameraRecording()
+```
+
+---
+
+### `StopRecording`
+
+Stops `_waveInEvent`, all timers, and the camera source. Calls `CleanupRecording`. For video modes it transitions to the async save path (`SaveVideoFileAsync`); for audio-only it confirms the save and calls `ResetUI`.
+
+```csharp
+private void StopRecording()
+```
+
+---
+
+### `SaveVideoFileAsync` *(async)*
+
+Wraps `SaveVideoWithFFmpeg()` in a `Task.Run` call. On the UI thread, invokes `OnVideoSaveComplete` on success or shows an error dialog on failure. Guards `_isSavingVideo` throughout.
+
+```csharp
+private async void SaveVideoFileAsync()
+```
+
+---
+
+### `SaveVideoWithFFmpeg`
+
+Runs on a background thread. Copies `_videoFrames` under a lock, then uses `Parallel.For` (max 4 threads) to save each frame as a numbered PNG to a temporary folder. Calls `CreateMP4WithFFmpeg` with the frames folder path, then deletes the temporary folder.
+
+```csharp
+private void SaveVideoWithFFmpeg()
+```
+
+---
+
+### `CreateMP4WithFFmpeg`
+
+Builds an FFmpeg command that combines the PNG frame sequence and the temporary WAV file into an H.264/AAC MP4 file in `_recordingsFolder`. Spawns `ffmpeg.exe` as a hidden child process and waits for exit. Cleans up the temporary audio file on success.
+
+```csharp
+private void CreateMP4WithFFmpeg(string framesFolder)
+```
+
+<ParamField path="framesFolder" type="string">
+  Absolute path to the directory containing `frame_000000.png`, `frame_000001.png`, … produced by `SaveVideoWithFFmpeg`.
+</ParamField>
+
+---
+
+### `TimerVideoCapture_Tick`
+
+Called at `VIDEO_FPS` Hz. Uses `Graphics.CopyFromScreen` to capture the primary screen into `_frameBuffer`, clones it as a 24-bit RGB `Bitmap`, updates `_previewBox.Image`, and appends the clone to `_videoFrames` under a lock.
+
+```csharp
+private void TimerVideoCapture_Tick(object sender, EventArgs e)
+```
+
+---
+
+### `VideoSource_NewFrame`
+
+AForge callback fired by the camera device on its own thread. Clones the frame, updates `_previewBox` via `Invoke` if necessary, and appends a 24-bit RGB clone to `_videoFrames` under a lock.
+
+```csharp
+private void VideoSource_NewFrame(object sender, NewFrameEventArgs eventArgs)
+```
+
+---
+
+### `CleanupRecording` / `CleanupVideoRecording`
+
+Dispose NAudio resources (`_waveInEvent`, `_waveFileWriter`) and video resources (`_frameBuffer`, `_graphics`, `_videoFrames`, `_videoSource`, `_previewBox.Image`) respectively, resetting each field to `null`.
+
+```csharp
+private void CleanupRecording()
+private void CleanupVideoRecording()
+```
+
+---
+
+## Events / Button Handlers
+
+| Handler | Trigger | Behaviour |
+|---|---|---|
+| `BtnStartRecording_Click` | "Iniciar Grabación" button | Checks `_isSavingVideo`, then dispatches to `StartAudioRecording`, `StartCameraRecording`, or `StartVideoRecording` based on the current mode flags. |
+| `BtnStopRecording_Click` | "Detener" button | Calls `StopRecording()`. |
+| `BtnToggleMode_Click` | "Cambiar modo" button | Toggles `_isAudioOnly` and updates `lblModeStatus`, `btnToggleMode.Text`, and `pictureModeIcon.BackColor`. Blocked during active recording or save. |
+| `BtnToggleCameraMode_Click` | "Cambiar a Cámara / Pantalla" button | Toggles `_useCameraInsteadOfScreen` and updates labels. Blocked during active recording or save. |
+| `BtnOpenRecordings_Click` | "Abrir Carpeta" button | Opens `_recordingsFolder` in Windows Explorer via `Process.Start("explorer.exe", ...)`. |
+| `TimerRecordingTime_Tick` | Every 1 000 ms while recording | Reads `_stopwatch.Elapsed.TotalSeconds` and formats `lblRecordingTime` as `HH:MM:SS`. |
+| `TimerVideoCapture_Tick` | Every ~33 ms while recording video | Captures one screen frame, updates the preview, and appends to `_videoFrames`. |
+| `WaveInEvent_DataAvailable` | NAudio capture buffer ready | Writes `e.Buffer[0..e.BytesRecorded]` to `_waveFileWriter` and flushes. |
+| `WaveInEvent_RecordingStopped` | NAudio stop event | Calls `CleanupRecording()`. |
+| `OnFormClosing` | Form close | If `_isSavingVideo`, waits up to 30 s with `DoEvents`. If `_isRecording`, confirms discard. Calls both cleanup methods and disposes timers. |
+
+---
+
+## Related Components
+
+<CardGroup cols={2}>
+  <Card title="FormDataBase" href="/reference/formdatabase">
+    Imports and analyses data files; shares the same application host as FormGrabadora.
+  </Card>
+  <Card title="FormEdit" href="/reference/formedit">
+    Opens and edits documents; can load output files produced by FormGrabadora workflows.
+  </Card>
+</CardGroup>

@@ -1,0 +1,200 @@
+---
+title: "FormMP4 — LibVLC Video Player"
+sidebarTitle: "FormMP4"
+description: "FormMP4 wraps LibVLCSharp to play MP4, AVI, MKV, and other video formats with seek, volume control, mute, and configurable repeat modes."
+---
+
+`FormMP4` is the video playback module of Explorador de Archivos. It wraps [LibVLCSharp](https://github.com/videolan/libvlcsharp) — specifically a `LibVLC` engine, a `MediaPlayer`, and a `VideoView` control — to render hardware-accelerated video directly inside the form. Playback can be triggered programmatically by `Form1` or interactively through an embedded open-file dialog. A debounced async seek pipeline prevents frame corruption during rapid scrubbing.
+
+## Overview
+
+On `OnLoad`, the form creates a `VideoView` docked inside `pnlVideo`, initializes the `LibVLC` engine and `MediaPlayer`, and starts a 100 ms `Timer` that drives progress-bar updates. The `MediaPlayer` raises cross-thread events (`TimeChanged`, `LengthChanged`, `EndReached`) that are marshalled back to the UI thread through `Control.Invoke` / `BeginInvoke` before touching any WinForms control.
+
+The repeat mode is a three-state cycle (`_repeatMode` = 0 → 1 → 2) toggled by the repeat button:
+
+| `_repeatMode` | Behavior | Highlight |
+|---|---|---|
+| `0` | Stop at end | `picRepeat` → black |
+| `1` | Replay current video | `picRepeat` → pink |
+| `2` | Replay current video | `picRepeat` → light blue |
+
+Seek operations are protected by a debounce (`SEEK_DEBOUNCE_MS = 100 ms`) to avoid sending redundant seek commands while the user drags the slider. During the load window (`_isLoadingVideo = true`) all interactive controls are disabled.
+
+## Constructor
+
+```csharp
+public FormMP4()
+```
+
+Takes no parameters. Calls `InitializeComponent()` only; all VLC initialization is deferred to `OnLoad` to ensure the native window handle is available before the `VideoView` is attached.
+
+`OnLoad` performs five ordered steps:
+
+1. `InitializeVideoView()` — creates a `VideoView`, docks it `Fill` inside `pnlVideo`.
+2. `InitializeVLC()` — calls `Core.Initialize()`, creates `LibVLC` and `MediaPlayer`, assigns `videoView.MediaPlayer`, and wires the three `MediaPlayer` events.
+3. `InitializeTimer()` — creates a 100 ms `System.Windows.Forms.Timer` and starts it.
+4. `ConfigurarTrackbar()` — sets `trkProgreso` range to `[0, 10000]`.
+5. `ConfigurarPictureBoxes()` — sets `trkVolumen` range to `[0, 100]` with an initial value of `100`.
+
+## Public Methods
+
+### `CargarYReproducir`
+
+```csharp
+public void CargarYReproducir(string rutaArchivo)
+```
+
+The sole public entry point. Called by `Form1` after creating or reusing the `FormMP4` instance. Decides whether to load immediately or to defer by 500 ms based on the `_isInitialized` flag.
+
+<ParamField path="rutaArchivo" type="string" required>
+  Absolute path of the video file to load and play. Supported formats include any container recognized by the LibVLC build (MP4, AVI, MKV, MOV, WMV, FLV, WebM, M4V, and more).
+</ParamField>
+
+**Dispatch logic:**
+
+```csharp
+if (!_isInitialized)
+{
+    Task.Run(async () =>
+    {
+        await Task.Delay(500);
+        await CargarVideoAsyncAwaitable(rutaArchivo);
+    });
+}
+else
+{
+    CargarVideoAsync(rutaArchivo);
+}
+```
+
+When `_isInitialized` is `true` (the normal case after `OnLoad` completes), `CargarVideoAsync` is called directly on the calling thread.
+
+## Private Key Methods
+
+### `CargarVideoAsync`
+
+```csharp
+private async void CargarVideoAsync(string rutaArchivo)
+```
+
+The core load-and-play routine. Sets `_isLoadingVideo = true` and `_isSeeking = true` as guards before modifying the media pipeline.
+
+**Steps:**
+1. Stops the current media if playing and awaits 100 ms.
+2. Disposes the previous `Media` object.
+3. Creates a new `LibVLCSharp.Shared.Media` from the file path and awaits `media.Parse(MediaParseOptions.ParseLocal)`.
+4. Calls `_mediaPlayer.Play(media)`.
+5. Resets mute state and applies the current `trkVolumen.Value` as volume.
+6. Updates `lblNombreArchivo.Text` with the file name.
+7. Awaits 300 ms for the pipeline to stabilize, then resets the progress bar and time labels.
+
+---
+
+### `RealizarSeekAsync`
+
+```csharp
+private async void RealizarSeekAsync(long nuevoTiempo)
+```
+
+Thread-safe debounced seek. Checks that `_isLoadingVideo` is false and that at least `SEEK_DEBOUNCE_MS` (100 ms) have elapsed since the last seek (using `DateTime.UtcNow.Ticks`). Runs `_mediaPlayer.Time = nuevoTiempo` on a background `Task.Run` thread to avoid blocking the UI.
+
+<ParamField path="nuevoTiempo" type="long" required>
+  Target playback position in **milliseconds**. Clamped to `Math.Max(0, nuevoTiempo)` before assignment.
+</ParamField>
+
+---
+
+### `ActualizarBarraProgreso`
+
+```csharp
+private void ActualizarBarraProgreso()
+```
+
+Reads `_mediaPlayer.Length` and `_mediaPlayer.Time`, computes a proportional `[0, 10000]` integer for the track bar, and updates `trkProgreso`, `lblTiempoActual`, and `lblTiempoTotal`. All control updates use `Control.InvokeRequired` / `Control.Invoke` guards because the method can be called from both the UI thread (timer tick) and `MediaPlayer` event threads.
+
+---
+
+### `GestionarFinVideo`
+
+```csharp
+private void GestionarFinVideo()
+```
+
+Called on the UI thread by the `MediaPlayer_EndReached` marshalling path. Dispatches on `_repeatMode`:
+
+- `0` → calls `_mediaPlayer.Stop()` and `ActualizarUIAlInicio()`.
+- `1` or `2` → calls `ReiniciarVideoAsync()`.
+
+---
+
+### `FormatearTiempo`
+
+```csharp
+private string FormatearTiempo(long milisegundos)
+```
+
+Converts a millisecond timestamp to a display string.
+
+<ParamField path="milisegundos" type="long" required>
+  Time value in milliseconds. Negative values return `"00:00"`.
+</ParamField>
+
+<ResponseField name="string" type="string">
+  `"MM:SS"` for durations under one hour, or `"HH:MM:SS"` for longer videos.
+</ResponseField>
+
+## Events
+
+### Transport Controls
+
+| Handler | Control | Behavior |
+|---|---|---|
+| `PicPlayPause_Click` | Play/Pause button | Calls `_mediaPlayer.Pause()` or `_mediaPlayer.Play()` and swaps the button icon accordingly. Guards against `_isLoadingVideo`. |
+| `PicStop_Click` | Stop button | Calls `_mediaPlayer.Stop()` and resets the progress bar and time labels to zero. |
+| `PicAdelante_Click` | Skip forward | Calls `RealizarSeekAsync(_mediaPlayer.Time + 5000)` to advance 5 seconds. |
+| `PicAtras_Click` | Skip back | Calls `RealizarSeekAsync(Math.Max(0, _mediaPlayer.Time - 5000))` to rewind 5 seconds. |
+| `PicRepeat_Click` | Repeat button | Cycles `_repeatMode` through 0 → 1 → 2 → 0 and updates `picRepeat.BackColor`. |
+| `PicMute_Click` | Mute button | Toggles `_mediaPlayer.Mute`; changes `picMute.BackColor` to dark red (muted) or black (unmuted). |
+| `PicAbrir_Click` | Open file button | Shows a filtered `OpenFileDialog` and calls `CargarVideoAsync` on confirmation. Only active when `_isInitialized` is `true`. |
+
+### Seek and Volume
+
+| Handler | Control | Behavior |
+|---|---|---|
+| `TrkProgreso_Scroll` | Seek bar | Converts `trkProgreso.Value` to a millisecond position (`value / 10000 × duration`) and calls `RealizarSeekAsync`. |
+| `TrkVolumen_Scroll` | Volume bar | Sets `_mediaPlayer.Volume = trkVolumen.Value` directly (range 0–100). |
+
+### MediaPlayer Events
+
+| Handler | Source | Behavior |
+|---|---|---|
+| `MediaPlayer_TimeChanged` | `MediaPlayer.TimeChanged` | Calls `ActualizarBarraProgreso()` when not seeking or loading. |
+| `MediaPlayer_LengthChanged` | `MediaPlayer.LengthChanged` | Calls `ActualizarBarraProgreso()` when not loading. |
+| `MediaPlayer_EndReached` | `MediaPlayer.EndReached` | Marshals to the UI thread via `BeginInvoke` and calls `GestionarFinVideo()`. |
+
+### Timer
+
+| Handler | Interval | Behavior |
+|---|---|---|
+| `TimerProgreso_Tick` | 100 ms | Calls `ActualizarBarraProgreso()` when media is loaded and the player is not seeking or loading. Serves as a polling fallback for platforms where `TimeChanged` events are infrequent. |
+
+### Cleanup
+
+`OnClosed` stops and disposes `_timerProgreso`, `_mediaPlayer`, `_libVLC`, and `videoView` in sequence to ensure the native VLC process is fully released before the form handle is destroyed.
+
+## Related Components
+
+<CardGroup cols={2}>
+  <Card title="Form1" href="/reference/form1">
+    Host shell that creates FormMP4 on first use, calls CargarYReproducir, and closes the window on application exit.
+  </Card>
+  <Card title="FormMP3" href="/reference/formmp3">
+    Audio player module — runs alongside FormMP4 when both audio and video files are opened from the file browser.
+  </Card>
+  <Card title="FormEditarFotos" href="/reference/form-editar-fotos">
+    Image editor and GPS viewer, the third media module managed by Form1 alongside FormMP4.
+  </Card>
+  <Card title="Form1 — AbrirReproductor" href="/reference/form1#abrirreproductor">
+    The dispatch method in Form1 that decides whether to route a file to FormMP4 or FormMP3.
+  </Card>
+</CardGroup>

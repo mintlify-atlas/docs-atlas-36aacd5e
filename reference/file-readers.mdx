@@ -1,0 +1,178 @@
+---
+title: "File Readers — IFileReader Implementations for Data Import"
+sidebarTitle: "File Readers"
+description: "Five IFileReader implementations read CSV, Excel, JSON, XML, and Word files into a uniform row collection for the DataPipeline and DataCleaner."
+---
+
+The file-reader layer in Explorador de Archivos provides a single uniform interface — `IFileReader` — with five concrete implementations covering the most common structured data formats. Every implementation produces the same output type so rows can be passed directly to `DataPipeline.Execute()` or `DataCleaner.Clean()` without any format-specific downstream code.
+
+## IFileReader Interface
+
+```csharp
+public interface IFileReader
+{
+    IEnumerable<IDictionary<string, object>> ReadFile(string path);
+}
+```
+
+<ParamField path="path" type="string" required>
+  Absolute or relative path to the file to read. All implementations throw `FileNotFoundException` if the file does not exist, and `InvalidDataException` for structural problems (missing headers, empty sheets, malformed content, etc.).
+</ParamField>
+
+### Uniform Output Format
+
+Every implementation returns rows as `IEnumerable<IDictionary<string, object>>`:
+
+- **Keys** are column names derived from the file's own header row (first row for CSV/Excel/Word) or element/attribute names (JSON/XML). Key comparison is `OrdinalIgnoreCase`.
+- **Values** are `object` — typically `string`, but numeric JSON values are returned as `long` or `double` where the format preserves type information.
+- **Empty cells** are represented as `string.Empty`, never `null`.
+
+---
+
+## Implementations
+
+| Class | Format | Extension | NuGet Library |
+|---|---|---|---|
+| `CsvFileReader` | Comma-separated values | `.csv`, `.txt` | [CsvHelper](https://joshclose.github.io/CsvHelper/) |
+| `ExcelFileReader` | Open XML spreadsheet | `.xlsx` | [DocumentFormat.OpenXml](https://github.com/dotnet/Open-XML-SDK) |
+| `JsonFileReader` | JavaScript Object Notation | `.json` | `System.Text.Json` (BCL) |
+| `XmlFileReader` | Extensible Markup Language | `.xml` | `System.Xml.Linq` (BCL) |
+| `WordFileReader` | Open XML word processor | `.docx` | [DocumentFormat.OpenXml](https://github.com/dotnet/Open-XML-SDK) |
+
+---
+
+## CsvFileReader
+
+```csharp
+public sealed class CsvFileReader : IFileReader
+{
+    public CsvFileReader(char delimiter = ',') { ... }
+    public IEnumerable<IDictionary<string, object>> ReadFile(string path);
+}
+```
+
+<ParamField path="delimiter" type="char" default="','">
+  Field separator character. Pass `';'` for semicolon-delimited files common in European locales.
+</ParamField>
+
+Reads with `HasHeaderRecord = true` and `TrimOptions.Trim`, so surrounding whitespace is stripped from every field before the row is returned. Malformed fields and missing trailing columns are silently skipped (`BadDataFound = null`, `MissingFieldFound = null`).
+
+---
+
+## ExcelFileReader
+
+```csharp
+public sealed class ExcelFileReader : IFileReader
+{
+    public IEnumerable<IDictionary<string, object>> ReadFile(string path);
+}
+```
+
+Opens `.xlsx` files in read-only mode via `SpreadsheetDocument.Open`. Always reads the **first worksheet**. The first row is treated as column headers; empty header cells are renamed `Columna{N}` to avoid key collisions. Shared string table lookups are handled automatically, so string cells stored as indexed references are returned as their resolved text values.
+
+<Note>
+  Excel `.xls` (legacy binary format) is not supported. Convert to `.xlsx` before importing.
+</Note>
+
+---
+
+## JsonFileReader
+
+```csharp
+public sealed class JsonFileReader : IFileReader
+{
+    public IEnumerable<IDictionary<string, object>> ReadFile(string path);
+}
+```
+
+Handles three JSON shapes automatically:
+
+| JSON Structure | Handling |
+|---|---|
+| Root array of objects `[{…}, {…}]` | Each element becomes one row |
+| Root object with one array property `{"data": [{…}]}` | The first array property is used |
+| Root object with no array `{…}` | The root object itself becomes a single row |
+
+If parsing fails and the content starts with `<`, the reader automatically delegates to `XmlFileReader` as a fallback (handles files with a `.json` extension that are actually XML).
+
+JSON type mapping: `string` → `string`, integer number → `long`, floating-point → `double`, `true`/`false` → `"true"`/`"false"`, `null` → `string.Empty`, nested objects/arrays → raw JSON text.
+
+---
+
+## XmlFileReader
+
+```csharp
+public sealed class XmlFileReader : IFileReader
+{
+    public IEnumerable<IDictionary<string, object>> ReadFile(string path);
+}
+```
+
+Treats the **direct children of the root element** as rows. For each child element:
+
+1. All XML **attributes** are mapped as columns first.
+2. All direct **child elements** whose content is text are mapped as columns, overriding any same-named attribute.
+
+```xml
+<Clientes>
+  <Cliente id="1" nombre="Ana">
+    <Email>ana@ejemplo.com</Email>
+  </Cliente>
+</Clientes>
+```
+
+Produces one row: `{ "id": "1", "nombre": "Ana", "Email": "ana@ejemplo.com" }`.
+
+---
+
+## WordFileReader
+
+```csharp
+public sealed class WordFileReader : IFileReader
+{
+    public IEnumerable<IDictionary<string, object>> ReadFile(string path);
+}
+```
+
+Extracts data from the **first table** found in the document body. The first table row is used as column headers; subsequent rows become data rows. Empty header cells are named `Columna{N}`. Cells with fewer columns than the header row are padded with `string.Empty`.
+
+<Warning>
+  The Word document must contain at least one table. Free-form paragraph text is not parsed. Documents with only paragraphs will throw `InvalidDataException`.
+</Warning>
+
+---
+
+## Usage Example
+
+```csharp
+// Pick the reader that matches the file extension
+IFileReader reader = Path.GetExtension(filePath).ToLower() switch
+{
+    ".csv"  => new CsvFileReader(),
+    ".xlsx" => new ExcelFileReader(),
+    ".json" => new JsonFileReader(),
+    ".xml"  => new XmlFileReader(),
+    ".docx" => new WordFileReader(),
+    _       => throw new NotSupportedException($"Format not supported: {filePath}")
+};
+
+IReadOnlyList<IDictionary<string, object>> rows =
+    reader.ReadFile(filePath).ToList().AsReadOnly();
+
+// Infer types, clean, then run through the pipeline
+var inferrer = new ColumnTypeInferrer();
+var types    = inferrer.Infer(rows).ColumnTypes;
+var (cleaned, _) = DataCleaner.Clean(rows, types);
+
+var pipeline = new DataPipeline();
+var result   = pipeline.Execute(cleaned, "Nombre ASC");
+```
+
+<CardGroup cols={2}>
+  <Card title="DataPipeline" href="/reference/data-pipeline">
+    Consumes IFileReader output to normalize, validate, and order rows
+  </Card>
+  <Card title="DataCleaner" href="/reference/data-cleaner">
+    Type-aware cleaning applied to the rows returned by file readers
+  </Card>
+</CardGroup>

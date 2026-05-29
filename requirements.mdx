@@ -1,0 +1,63 @@
+---
+title: "System Requirements for Explorador de Archivos"
+sidebarTitle: "Requirements"
+description: "Operating system, .NET runtime, Visual Studio version, and hardware prerequisites needed to build and run Explorador de Archivos on Windows."
+---
+
+Explorador de Archivos is a Windows-exclusive desktop application. Because it targets `net8.0-windows` and relies on Windows Forms APIs, Windows GDI+, DirectShow (via AForge.Video), and the Windows shell, it can only be built and executed on a Windows machine. The sections below list every prerequisite needed to compile the project from source and to run the resulting executable on an end-user machine.
+
+<Warning>
+  Explorador de Archivos **will not compile on macOS or Linux**. The project file sets `<TargetFramework>net8.0-windows</TargetFramework>` and `<UseWindowsForms>true</UseWindowsForms>`, both of which are Windows-only properties. Attempting to build on a non-Windows platform will result in a build error.
+</Warning>
+
+## Runtime Requirements
+
+These are the minimum requirements for running a pre-built copy of Explorador de Archivos on an end-user machine.
+
+| Requirement | Minimum Version / Value |
+|---|---|
+| Operating System | Windows 10 or later (64-bit) |
+| .NET Runtime | .NET 8 (`net8.0-windows`) |
+| Windows Forms | Required (`UseWindowsForms: true`) |
+
+## Development Requirements
+
+These are the additional prerequisites needed to build the project from source.
+
+| Requirement | Details |
+|---|---|
+| Visual Studio | 2022 version 17.x or later |
+| VS Workload | .NET Desktop Development |
+| .NET SDK | .NET 8 SDK (included with the workload) |
+| NuGet Restore | Internet connection required on first build to download packages |
+
+## Key Dependencies
+
+All dependencies are declared as `<PackageReference>` entries in `ExploradorDeArchivos.csproj` and are restored automatically via NuGet. The table below lists the major packages and the pinned versions used by the project.
+
+| NuGet Package | Version | Purpose |
+|---|---|---|
+| `NAudio` | 2.3.0 | Audio playback and capture for the MP3 player and recorder |
+| `LibVLCSharp.WinForms` | 3.9.7.1 | VLC-based video rendering control for the MP4 player |
+| `TagLibSharp` | 2.3.0 | Audio file metadata reading (artist, album, duration) |
+| `MetadataExtractor` | 2.8.1 | EXIF and other metadata extraction from image files |
+| `CsvHelper` | 33.1.0 | CSV file parsing and writing for the data cleaner |
+| `DocumentFormat.OpenXml` | 3.5.1 | Excel (.xlsx) and Word (.docx) file processing |
+| `FFMpegCore` | 5.4.0 | FFMpeg pipeline integration for the screen recorder |
+| `AForge.Video` | 2.2.5 | Screen and webcam capture for the recorder module |
+| `SpotifyAPI.Web` | 7.4.2 | Spotify Web API integration for music metadata |
+| `MySqlConnector` | 2.5.0 | MySQL database connectivity for the data viewer |
+| `Npgsql` | 10.0.2 | PostgreSQL database connectivity for the data viewer |
+| `Microsoft.Data.SqlClient` | 7.0.1 | SQL Server connectivity for the data viewer |
+| `MailKit` | 4.16.0 | Email sending and receiving capabilities |
+| `Microsoft.Web.WebView2` | 1.0.4015-prerelease | Chromium-based web renderer for the document editor |
+| `FluentValidation` | 12.1.1 | Rule-based validation for the data cleaner module |
+| `Newtonsoft.Json` | 13.0.4 | JSON serialization and deserialization |
+| `HtmlAgilityPack` | 1.12.4 | HTML parsing for the document editor |
+| `SharpAvi` | 3.0.1 | AVI video encoding for recorded screen captures |
+
+<Note>
+  **VLC native libraries** are bundled automatically via `VideoLAN.LibVLC.Windows` (version 3.0.23.1). You do **not** need to install VLC media player separately on the machine — the required native DLLs are copied to the output directory by NuGet during the build.
+
+  **FFMpeg** is required by the `FormGrabadora` recorder module but is **not** bundled by NuGet. The application expects the FFMpeg executable to be present at `ffmpeg\bin\ffmpeg.exe` relative to the application's working directory. Download a Windows FFMpeg build from [ffmpeg.org](https://ffmpeg.org/download.html) and place it in that path before using the recorder.
+</Note>

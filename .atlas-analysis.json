@@ -1,0 +1,131 @@
+{
+  "projectType": "saas",
+  "projectName": "Explorador de Archivos",
+  "projectDescription": "A feature-rich Windows desktop file explorer built with C# and WinForms, integrating a media player, image editor, data cleaning pipeline, multi-database viewer, screen/audio recorder, and document editor in one unified application.",
+  "theme": "maple",
+  "primaryColor": "#3B6FD4",
+  "lightColor": "#EEF3FB",
+  "darkColor": "#1A3A7A",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Getting Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "requirements"
+            ]
+          },
+          {
+            "group": "File Explorer",
+            "pages": [
+              "features/file-browser",
+              "features/navigation",
+              "features/quick-access"
+            ]
+          },
+          {
+            "group": "Media",
+            "pages": [
+              "features/mp3-player",
+              "features/mp4-player",
+              "features/image-editor"
+            ]
+          },
+          {
+            "group": "Data Tools",
+            "pages": [
+              "features/data-viewer",
+              "features/data-cleaner",
+              "features/document-editor"
+            ]
+          },
+          {
+            "group": "Recording",
+            "pages": [
+              "features/recorder"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Reference",
+        "groups": [
+          {
+            "group": "Core Components",
+            "pages": [
+              "reference/form1",
+              "reference/formmp3",
+              "reference/formmp4",
+              "reference/form-editar-fotos",
+              "reference/formdatabase",
+              "reference/formcorrector",
+              "reference/formedit",
+              "reference/formgrabadora"
+            ]
+          },
+          {
+            "group": "Data Pipeline",
+            "pages": [
+              "reference/data-pipeline",
+              "reference/data-cleaner",
+              "reference/column-type-inferrer",
+              "reference/file-readers"
+            ]
+          },
+          {
+            "group": "Utilities",
+            "pages": [
+              "reference/image-processor",
+              "reference/music-metadata-fetcher",
+              "reference/playlist-global",
+              "reference/email-settings"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Full-featured file browser with directory navigation history and quick-access shortcuts",
+    "MP3 player with playlist management, shuffle, loop, metadata display, and lyrics via Genius/Spotify APIs",
+    "MP4/video player powered by LibVLC with seek, volume, and repeat controls",
+    "Image editor with brightness/contrast/saturation, grayscale, sepia, crop, brush drawing, and GPS EXIF map view",
+    "Data Fusion Arena: import from SQL Server, MariaDB, and PostgreSQL; visualize with charts",
+    "Data Cleaner: multi-format file reader (CSV, Excel, JSON, XML, Word) with column-type inference and automatic cleaning",
+    "Document/spreadsheet editor supporting CSV, XLSX, DOCX, PPTX, TXT, JSON, XML, and PDF",
+    "Screen and audio recorder with optional webcam capture, powered by NAudio and FFMpeg"
+  ],
+  "publicApiSurface": [
+    "Form1.LoadDirectory(string path)",
+    "FormMP3.AgregarYReproducir(string rutaArchivo)",
+    "FormMP3.AgregarALista(string rutaArchivo)",
+    "FormMP3.ActualizarPlaylist()",
+    "FormMP3.CerrarCompletamente()",
+    "FormMP4.CargarYReproducir(string rutaArchivo)",
+    "FormEditarFotos.AbrirImagen(string rutaArchivo)",
+    "DataPipeline.Execute(IEnumerable<IDictionary<string,object>> rows, string? orderByExpression)",
+    "DataCleaner.Clean(IReadOnlyList<IDictionary<string,object>> rows, IReadOnlyDictionary<string,ColumnDataType> columnTypes)",
+    "DataCleaner.CleanDate(string value)",
+    "ColumnTypeInferrer.Infer(IReadOnlyList<IDictionary<string,object>> rows)",
+    "ImageProcessor.Adjust(Bitmap source, int brightness, int contrast, int saturation)",
+    "ImageProcessor.ApplyGrayscale(Bitmap source)",
+    "ImageProcessor.ApplySepia(Bitmap source)",
+    "ImageProcessor.InvertColors(Bitmap source)",
+    "MusicMetadataFetcher.ActualizarMetadatosDelArchivoAsync(string filePath)",
+    "PlaylistGlobal.AgregarCancion(string ruta)",
+    "PlaylistGlobal.ObtenerPlaylist()",
+    "PlaylistGlobal.ObtenerCancionActual()",
+    "PlaylistGlobal.EstablecerCancionActual(string ruta)",
+    "PlaylistGlobal.Limpiar()",
+    "DatabaseExporter.GetTablesSqlServer(string connectionString)",
+    "DatabaseExporter.GetTablesMariaDb(string connectionString)",
+    "DatabaseExporter.GetTablesPostgreSql(string connectionString)",
+    "DataReader.ReadFromSqlServer(string connectionString, string tableName)",
+    "DataReader.ReadFromMariaDb(string connectionString, string tableName)",
+    "DataReader.ReadFromPostgreSql(string connectionString, string tableName)"
+  ]
+}

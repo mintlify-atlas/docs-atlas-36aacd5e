@@ -1,0 +1,120 @@
+---
+title: "DataPipeline — Normalize, Validate, and Order Rows"
+sidebarTitle: "DataPipeline"
+description: "DataPipeline orchestrates three-step processing of structured data: string normalization, row validation with DynamicRowValidator, and Dynamic LINQ ordering."
+---
+
+`DataPipeline` is the central orchestrator of the data-cleaning subsystem in Explorador de Archivos. It accepts a collection of raw rows produced by any `IFileReader` implementation and runs them through three atomic, sequential steps — normalization, validation, and ordering — returning a structured `PipelineResult` that separates clean rows from rejected ones and records every error.
+
+## Execute()
+
+```csharp
+public PipelineResult Execute(
+    IEnumerable<IDictionary<string, object>> rows,
+    string? orderByExpression = null
+)
+```
+
+<ParamField path="rows" type="IEnumerable<IDictionary<string, object>>" required>
+  The raw row collection produced by an `IFileReader`. Keys are column names (case-insensitive); values are the raw cell data as `object`.
+</ParamField>
+
+<ParamField path="orderByExpression" type="string?" default="null">
+  A Dynamic LINQ ordering expression applied to the validated rows. Accepts column names with optional `ASC` or `DESC` direction, e.g. `"Nombre ASC"` or `"Fecha DESC"`. When `null` or empty the original row order is preserved.
+</ParamField>
+
+### Returns — `PipelineResult`
+
+`PipelineResult` is a `sealed record` with three read-only fields:
+
+<ResponseField name="ValidRows" type="IReadOnlyList<IDictionary<string, object>>">
+  Rows that passed every validation rule, optionally sorted by `orderByExpression`.
+</ResponseField>
+
+<ResponseField name="InvalidRows" type="IReadOnlyList<IDictionary<string, object>>">
+  Rows that failed one or more validation checks. Preserved in original row order and not included in `ValidRows`.
+</ResponseField>
+
+<ResponseField name="ErrorLog" type="IReadOnlyList<string>">
+  Human-readable error messages, one per validation failure. Each entry is formatted as `[Fila N] Campo 'ColumnName': error message`, where `N` is the 1-based spreadsheet row number (header row = 1, first data row = 2).
+</ResponseField>
+
+```csharp
+public sealed record PipelineResult(
+    IReadOnlyList<IDictionary<string, object>> ValidRows,
+    IReadOnlyList<IDictionary<string, object>> InvalidRows,
+    IReadOnlyList<string> ErrorLog
+);
+```
+
+---
+
+## Pipeline Steps
+
+<Steps>
+  <Step title="Step 1 — Normalize">
+    Iterates every cell in every row and calls `string.Trim()` on string values. Non-string values (numbers, dates stored as typed objects) are passed through unchanged. The result is a new `Dictionary<string, object>` with `OrdinalIgnoreCase` key comparison, ensuring column name lookups are case-insensitive for the remainder of the pipeline.
+  </Step>
+  <Step title="Step 2 — Validate">
+    Passes each normalized row to `DynamicRowValidator.Validate()`. Rows where `result.IsValid == true` are collected in the valid list; failing rows are moved to the invalid list and their `result.Errors` are serialized into the error log with row number and column name context.
+  </Step>
+  <Step title="Step 3 — Order">
+    Converts valid rows to `ExpandoObject` instances so that Dynamic LINQ can access named properties, then calls `.OrderBy(orderByExpression)`. Results are converted back to `IDictionary<string, object>` to maintain the public interface contract. If the expression is malformed, an `ArgumentException` is thrown with the original Dynamic LINQ error message.
+  </Step>
+</Steps>
+
+---
+
+## `orderByExpression` Examples
+
+| Expression | Effect |
+|---|---|
+| `null` | No ordering; rows are returned in validation order |
+| `"Nombre ASC"` | Alphabetically ascending by the `Nombre` column |
+| `"Fecha DESC"` | Most-recent-first by the `Fecha` column |
+| `"Apellido ASC, Nombre ASC"` | Multi-column sort (last name, then first name) |
+| `"Monto DESC"` | Largest amount first |
+
+```csharp
+var pipeline = new DataPipeline();
+
+// No ordering
+PipelineResult result = pipeline.Execute(rows);
+
+// Sort by name ascending
+PipelineResult sorted = pipeline.Execute(rows, "Nombre ASC");
+
+Console.WriteLine($"Valid: {sorted.ValidRows.Count}");
+Console.WriteLine($"Invalid: {sorted.InvalidRows.Count}");
+foreach (var error in sorted.ErrorLog)
+    Console.WriteLine(error);
+// Output example:
+// [Fila 3] Campo 'Email': The field Email is not a valid e-mail address.
+```
+
+---
+
+## Error Log Format
+
+Every entry in `ErrorLog` follows this pattern:
+
+```
+[Fila {rowNumber}] Campo '{columnName}': {validationMessage}
+```
+
+`rowNumber` starts at **2** (row 1 is the header row), matching the row numbering a user would see in a spreadsheet application. A single row can contribute multiple entries if more than one field fails validation.
+
+<CardGroup cols={2}>
+  <Card title="DataCleaner" href="/reference/data-cleaner">
+    Type-aware cleaning applied before rows reach the pipeline
+  </Card>
+  <Card title="ColumnTypeInferrer" href="/reference/column-type-inferrer">
+    Infers column types consumed by DataCleaner
+  </Card>
+  <Card title="File Readers" href="/reference/file-readers">
+    IFileReader implementations that supply rows to Execute()
+  </Card>
+  <Card title="ImageProcessor" href="/reference/image-processor">
+    Bitmap filter utilities used elsewhere in the application
+  </Card>
+</CardGroup>

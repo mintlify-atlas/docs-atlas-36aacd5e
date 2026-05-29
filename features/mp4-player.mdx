@@ -1,0 +1,113 @@
+---
+title: "MP4 Video Player Powered by LibVLC"
+sidebarTitle: "MP4 Player"
+description: "Watch MP4, AVI, MKV, MOV, and other video formats in Explorador de Archivos using the embedded LibVLC engine. Supports seek, volume, mute, and repeat modes."
+---
+
+The video player (`FormMP4`) embeds the full **LibVLC** engine through the **LibVLCSharp** binding, rendering video inside a `VideoView` panel docked to the form. It launches automatically when you double-click a video file in the main file browser, or you can open files directly from the player's own Open button. Because VLC is bundled as a NuGet package, no separate VLC installation is required on the user's machine.
+
+## Supported Formats
+
+The player accepts any container that LibVLC can decode. The Open dialog explicitly lists the most common ones:
+
+| Format | Extension(s) |
+|---|---|
+| MPEG-4 | `.mp4`, `.m4v` |
+| AVI | `.avi` |
+| Matroska | `.mkv` |
+| QuickTime | `.mov` |
+| Windows Media | `.wmv` |
+| Flash Video | `.flv` |
+| WebM | `.webm` |
+| All files | `*.*` |
+
+<Note>
+  VLC libraries are bundled via the **VideoLAN.LibVLC.Windows** NuGet package. No separate VLC installation is needed on the end-user machine. `Core.Initialize()` is called once during `OnLoad` to bootstrap the native binaries.
+</Note>
+
+## Loading a Video
+
+There are two ways to open a video:
+
+- **From the file browser** — double-clicking a video file in `Form1` calls the public method `CargarYReproducir(string rutaArchivo)`. If the VLC engine has not finished initializing yet, the call is deferred with a 500 ms `Task.Delay` and then forwarded to `CargarVideoAsync`.
+- **Open button inside FormMP4** — clicking the Open picture box (`PicAbrir`) shows an `OpenFileDialog` filtered to supported video extensions, then calls `CargarVideoAsync` with the selected path.
+
+`CargarVideoAsync` performs the following steps each time a new file is loaded:
+
+```csharp
+// Stop and dispose the current media
+if (_mediaPlayer.IsPlaying) _mediaPlayer.Stop();
+_mediaPlayer.Media?.Dispose();
+
+// Create and parse the new media from the file path
+var media = new Media(_libVLC, rutaArchivo, FromType.FromPath);
+await media.Parse(MediaParseOptions.ParseLocal);
+
+// Hand it to the player and start
+_mediaPlayer.Play(media);
+```
+
+The filename is shown in `lblNombreArchivo` and both time labels are reset to `00:00`.
+
+## Playback Controls
+
+| Control | Function |
+|---|---|
+| **Play / Pause** | Calls `_mediaPlayer.Pause()` or `_mediaPlayer.Play()` depending on the current `IsPlaying` state. |
+| **Stop** | Calls `_mediaPlayer.Stop()`, resets the seek bar to 0, and clears both time labels. |
+| **Forward 5 s** | Seeks to `_mediaPlayer.Time + 5000` ms via the debounced `RealizarSeekAsync`. |
+| **Rewind 5 s** | Seeks to `Math.Max(0, _mediaPlayer.Time − 5000)` ms via the debounced `RealizarSeekAsync`. |
+| **Seek bar** | A 10,000-step `TrackBar` (`trkProgreso`). Scrolling maps the thumb position to `(value / 10000.0) × duration` in milliseconds and seeks via `RealizarSeekAsync`. |
+| **Volume** | `trkVolumen` (0–100) sets `_mediaPlayer.Volume` directly on scroll. Initialized to 100. |
+| **Mute** | Toggles `_mediaPlayer.Mute`. `picMute` turns red (`Color.FromArgb(200, 50, 50)`) when muted and black when unmuted. |
+| **Repeat mode** | Cycles through three modes on each click — see [Repeat Modes](#repeat-modes). |
+
+## Repeat Modes
+
+Clicking the Repeat button (`PicRepeat`) cycles through three modes stored in the integer field `_repeatMode`:
+
+<Tabs>
+  <Tab title="Mode 0 — Stop at end">
+    The default. When `MediaPlayer.EndReached` fires, `_mediaPlayer.Stop()` is called and the seek bar resets to `0`. The video does not replay.
+
+    The `picRepeat` background is set to **black**.
+  </Tab>
+  <Tab title="Mode 1 — Repeat current">
+    When the video ends, `ReiniciarVideoAsync()` is called: it stops and immediately plays again from the start.
+
+    The `picRepeat` background is set to **pink** (`Color.FromArgb(255, 100, 200)`).
+  </Tab>
+  <Tab title="Mode 2 — Loop">
+    Identical behaviour to Mode 1 in the current implementation — the video restarts on `EndReached`.
+
+    The `picRepeat` background is set to **light blue** (`Color.FromArgb(100, 200, 255)`).
+  </Tab>
+</Tabs>
+
+## Time Display
+
+Time is shown in two labels:
+
+- `lblTiempoActual` — current playback position
+- `lblTiempoTotal` — total duration of the loaded video
+
+The `FormatearTiempo` helper formats millisecond values as `mm:ss` for videos shorter than one hour, and `hh:mm:ss` for longer ones:
+
+```csharp
+private string FormatearTiempo(long milisegundos)
+{
+    long horas    = milisegundos / 3600000;
+    long minutos  = (milisegundos % 3600000) / 60000;
+    long segundos = (milisegundos % 60000) / 1000;
+
+    return horas > 0
+        ? $"{horas:D2}:{minutos:D2}:{segundos:D2}"
+        : $"{minutos:D2}:{segundos:D2}";
+}
+```
+
+The seek bar (`trkProgreso`) has a fixed maximum of **10,000 steps** (`TRACKBAR_MAX = 10000`), giving sub-second precision regardless of video length. Progress is updated by three cooperative mechanisms: the `MediaPlayer.TimeChanged` event, the `MediaPlayer.LengthChanged` event, and a 100 ms polling `Timer`.
+
+<Warning>
+  Rapid scrubbing on the seek bar is **debounced at 100 ms** (`SEEK_DEBOUNCE_MS = 100`). If two seek requests arrive within 100 ms of each other, the second is silently dropped. This prevents stutter caused by flooding the VLC engine with back-to-back position changes. For frame-accurate navigation, pause the video first and scrub slowly.
+</Warning>

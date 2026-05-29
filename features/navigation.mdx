@@ -1,0 +1,123 @@
+---
+title: "Navigating Directories in Explorador de Archivos"
+sidebarTitle: "Navigation"
+description: "Use the back button, address bar, open dialog, and drives view to move through your filesystem. Navigation history is tracked automatically for quick back-traversal."
+---
+
+Explorador de Archivos gives you four complementary ways to move around your filesystem: type a path directly into the address bar, click **Back** to retrace your steps, use the folder picker dialog for graphical browsing, or jump to the Drives view to start from a disk root. All four controls stay synchronized through a single `LoadDirectory(string path)` method that refreshes the grid and updates the address bar on every navigation.
+
+---
+
+## Navigation Controls
+
+| Control | Element | Description |
+|---|---|---|
+| **Address bar** | `txtPath` | Type any absolute path and press **Enter** to navigate there immediately |
+| **Back button** | `btnBack` | Returns to the folder you were in before the current one, using a stack-based history |
+| **Open button** | `btnOpen` | Opens a `FolderBrowserDialog` so you can browse to a folder graphically |
+| **Drives button** | `btnDrives` | Switches the grid to a top-level view listing every disk drive on the system |
+
+### Address Bar
+
+Pressing **Enter** inside `txtPath` fires `txtPath_KeyDown`. The handler trims the typed text and calls `Directory.Exists` on it:
+
+```csharp
+private void txtPath_KeyDown(object sender, KeyEventArgs e)
+{
+    if (e.KeyCode == Keys.Enter)
+    {
+        string ruta = txtPath.Text.Trim();
+
+        if (Directory.Exists(ruta))
+        {
+            if (!string.IsNullOrEmpty(_currentPath))
+                _history.Push(_currentPath);
+
+            LoadDirectory(ruta);
+        }
+        else
+        {
+            MessageBox.Show("La ruta no existe", "Error",
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+}
+```
+
+<Tip>
+  You can type any absolute Windows path — including UNC paths such as `\\server\share\folder` — directly into the address bar. As long as the path resolves to an existing directory, `Directory.Exists` will return `true` and the grid will load its contents.
+</Tip>
+
+<Note>
+  If the path you typed does not exist, a modal message box is shown with the title **Error** and the text "La ruta no existe". The grid and history stack are left unchanged, so you can correct the path and try again without losing your current location.
+</Note>
+
+### Open Button
+
+`btnOpen_Click` shows a `FolderBrowserDialog`. If the user confirms a selection, `LoadDirectory` is called with the chosen path. The current path is pushed to the history stack by `LoadDirectory` itself, so the Back button works normally after using the dialog.
+
+```csharp
+private void btnOpen_Click(object sender, EventArgs e)
+{
+    using FolderBrowserDialog dlg = new FolderBrowserDialog();
+    if (dlg.ShowDialog() == DialogResult.OK)
+        LoadDirectory(dlg.SelectedPath);
+}
+```
+
+---
+
+## History Stack
+
+Every navigation action that moves you into a new folder records your previous location in `_history`, a `Stack<string>` field on `Form1`. This means Back always returns you to exactly where you were, regardless of how you navigated — address bar, double-click, shortcut, or the Open dialog.
+
+```csharp
+private Stack<string> _history = new Stack<string>();
+```
+
+The push/pop lifecycle works as follows:
+
+<Steps>
+  <Step title="Navigate to a new folder">
+    Before `LoadDirectory` renders the new folder, the current value of `_currentPath` is pushed onto `_history` (provided it is not null or empty). `_currentPath` is then updated to the new path.
+  </Step>
+  <Step title="Press Back">
+    `btnBack_Click` checks whether `_history` has any entries. If it does, it calls `_history.Pop()` to retrieve the most recent previous path and passes it to `LoadDirectory`.
+  </Step>
+  <Step title="History is exhausted">
+    Once the stack is empty, `btnBack_Click` does nothing — the button effectively becomes inactive when you are at the oldest recorded location.
+  </Step>
+</Steps>
+
+The Drives view is also integrated into the history: `btnDrives_Click` pushes the current path before switching to the `"DRIVES"` sentinel, so pressing **Back** from the Drives view returns you to the last real folder.
+
+---
+
+## Drives View
+
+Clicking **Drives** (or double-clicking the **Este equipo** Quick Access shortcut) calls `btnDrives_Click`, which enumerates every mounted drive using `DriveInfo.GetDrives()` and populates `dataGridView1` with one row per drive:
+
+```csharp
+private void btnDrives_Click(object sender, EventArgs e)
+{
+    if (!string.IsNullOrEmpty(_currentPath))
+        _history.Push(_currentPath);
+
+    dataGridView1.Rows.Clear();
+    txtPath.Text = "Equipo";
+    _currentPath = "DRIVES";
+
+    foreach (var drive in DriveInfo.GetDrives())
+    {
+        dataGridView1.Rows.Add(
+            imageList1.Images[idxFolder],
+            drive.Name,
+            "Unidad",
+            "", "",
+            drive.Name
+        );
+    }
+}
+```
+
+Each drive row shows the folder icon, the drive name (e.g. `C:\`), and the type label `Unidad`. The address bar displays **Equipo** while in this view. Double-clicking a drive row navigates into the root of that drive, exactly as double-clicking any other folder would.

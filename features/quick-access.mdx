@@ -1,0 +1,94 @@
+---
+title: "Quick Access Shortcuts for Common Folders"
+sidebarTitle: "Quick Access"
+description: "The Quick Access sidebar in Explorador de Archivos provides one-click navigation to Documents, Downloads, Pictures, Music, Videos, Desktop, and all disk drives."
+---
+
+The Quick Access sidebar gives you instant navigation to the folders you visit most often. A `listBoxShortcuts` control on the left side of the window lists up to seven predefined destinations. Double-clicking any entry loads that folder immediately — no typing required. The shortcuts are resolved at startup from the operating system's well-known folder registry, so they always point to the correct location on the current user's machine regardless of the Windows version or locale.
+
+---
+
+## Available Shortcuts
+
+`InitializeQuickAccess()` runs during `Form1`'s constructor and populates both the visible `listBoxShortcuts` and an internal `Dictionary<string, string>` called `_shortcutPaths`, which maps each display name to its resolved filesystem path.
+
+| Shortcut Name | Target Folder | `Environment.SpecialFolder` value |
+|---|---|---|
+| **Documentos** | My Documents | `SpecialFolder.MyDocuments` |
+| **Descargas** | User profile `Downloads` folder | `SpecialFolder.UserProfile` + `\Downloads` |
+| **Imágenes** | My Pictures | `SpecialFolder.MyPictures` |
+| **Música** | My Music | `SpecialFolder.MyMusic` |
+| **Vídeos** | My Videos | `SpecialFolder.MyVideos` |
+| **Escritorio** | Desktop | `SpecialFolder.Desktop` |
+| **Este equipo** | All Drives view | *(sentinel value `"DRIVES"`)* |
+
+Paths are resolved using `Environment.GetFolderPath(Environment.SpecialFolder.*)`. The Downloads folder is a special case — it is constructed by joining the `UserProfile` path with the literal string `Downloads`, since .NET Framework does not expose a dedicated `SpecialFolder.Downloads` enum value.
+
+```csharp
+// Example from InitializeQuickAccess()
+string docs     = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+string downloads = Path.Combine(
+    Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");
+string pictures = Environment.GetFolderPath(Environment.SpecialFolder.MyPictures);
+string music    = Environment.GetFolderPath(Environment.SpecialFolder.MyMusic);
+string videos   = Environment.GetFolderPath(Environment.SpecialFolder.MyVideos);
+string desktop  = Environment.GetFolderPath(Environment.SpecialFolder.Desktop);
+```
+
+<Note>
+  Each shortcut is only added to the sidebar if its resolved path actually exists on disk (`Directory.Exists` must return `true`). If a folder cannot be found — for example, a custom Windows installation where the Downloads folder was moved — that shortcut is silently omitted from the list. **Este equipo** is always included because it uses the hardcoded `"DRIVES"` sentinel and does not require a real directory path.
+</Note>
+
+---
+
+## Using Quick Access
+
+<Steps>
+  <Step title="Locate the Quick Access list">
+    Find `listBoxShortcuts` on the left side of the Explorador de Archivos window. It lists all shortcuts that were successfully resolved when the application started.
+  </Step>
+  <Step title="Double-click a shortcut">
+    Double-clicking fires `ListBoxShortcuts_DoubleClick`. The handler reads the selected item's text, looks up the matching key in `_shortcutPaths`, and retrieves the associated path.
+  </Step>
+  <Step title="The file grid updates immediately">
+    If the resolved path is a real directory, `LoadDirectory(path)` is called and the main grid refreshes to show the target folder's contents. The address bar also updates to reflect the new path, and the previous location is pushed onto the navigation history stack so you can press **Back** to return.
+
+    If the resolved value is `"DRIVES"`, `btnDrives_Click` is invoked instead, switching the grid to the full drives view.
+  </Step>
+</Steps>
+
+---
+
+## How Shortcut Lookup Works
+
+The handler strips any emoji prefix that might be prepended to shortcut labels in the UI, then matches the tail of the display string against the dictionary keys:
+
+```csharp
+private void ListBoxShortcuts_DoubleClick(object sender, EventArgs e)
+{
+    if (listBoxShortcuts.SelectedIndex < 0) return;
+
+    string selectedItem = listBoxShortcuts.SelectedItem.ToString().Trim();
+
+    // Match by suffix to handle any leading emoji characters
+    string clave = null;
+    foreach (var key in _shortcutPaths.Keys)
+    {
+        if (selectedItem.EndsWith(key))
+        {
+            clave = key;
+            break;
+        }
+    }
+
+    if (clave != null && _shortcutPaths.TryGetValue(clave, out string path))
+    {
+        if (path == "DRIVES")
+            btnDrives_Click(null, null);
+        else
+            LoadDirectory(path);
+    }
+}
+```
+
+This design means you can safely prefix shortcut labels with emoji or other decorative characters in the UI without breaking the underlying path resolution logic.

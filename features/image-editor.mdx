@@ -1,0 +1,210 @@
+---
+title: "Image Editor with Filters, Crop, and GPS Map View"
+sidebarTitle: "Image Editor"
+description: "Open, edit, and save images in Explorador de Archivos. Apply filters, adjust brightness and contrast, draw freehand, crop, and view EXIF GPS coordinates on an embedded map."
+---
+
+The image editor (`FormEditarFotos`) is a bitmap editing tool backed by the `ImageProcessor` static class and the **MetadataExtractor** library. It maintains two distinct `Bitmap` references — `loadedBitmap` as the unmodified baseline and `workingBitmap` as the active editing copy — so that every destructive operation is applied only to the working copy and can be fully undone with the Revert button. It also reads EXIF GPS data and displays coordinates on a live Google Maps embed via **WebView2**, and can write those coordinates back into the file on save.
+
+## Supported Formats
+
+| Operation | Formats |
+|---|---|
+| **Open** | BMP, JPG, JPEG, JFIF, PNG, GIF, TIFF, ICO |
+| **Save** | PNG, JPEG |
+
+The Open dialog filter is:
+
+```
+All Image Files|*.bmp;*.dib;*.jpg;*.jpeg;*.jpe;*.jfif;*.png;*.gif;*.tif;*.tiff;*.ico
+```
+
+## Opening an Image
+
+You can open an image in two ways:
+
+- **From the file browser** — double-clicking a supported image file in `Form1` calls `AbrirImagen(string rutaArchivo)`, the public entry point. The file path is stored in `Bitmap.Tag` for later EXIF extraction.
+- **Open button inside the editor** — clicking `btnOpen` shows an `OpenFileDialog` and loads the selected file the same way.
+
+Both paths call `LoadBitmap(Bitmap)` internally, which:
+1. Disposes any previously loaded bitmaps.
+2. Assigns the new image to `loadedBitmap` (immutable baseline).
+3. Clones it into `workingBitmap` (editable copy shown on the canvas).
+4. Resets all sliders (brightness, contrast, saturation) to `0`.
+
+## Image Adjustments
+
+Three sliders continuously adjust the working image in real time by applying a combined **ColorMatrix** via `ImageProcessor.Adjust()`. Each slider fires `TrackBar_Scroll`, which recomputes the matrix and replaces `workingBitmap`.
+
+| Adjustment | Range | Effect |
+|---|---|---|
+| **Brightness** | −100 to 100 | Shifts all channel values by `brightness / 100` in the translation row of the matrix. |
+| **Contrast** | −100 to 100 | Scales all channels by `1 + contrast / 100` and offsets to keep mid-tones centered. |
+| **Saturation** | −100 to 100 | Interpolates between a luminance-only matrix (−100) and a boosted-color matrix (+100) using ITU-R BT.601 luma weights (`R=0.3086`, `G=0.6094`, `B=0.0820`). |
+
+The three matrices are multiplied together (contrast × saturation × brightness) before a single `Graphics.DrawImage` call renders the result. The source for all adjustments is always `loadedBitmap`, so moving one slider never compounds with a previous adjustment.
+
+```csharp
+// Triggered by any of the three sliders
+private void TrackBar_Scroll(object? sender, EventArgs e)
+{
+    var source = loadedBitmap ?? workingBitmap;
+    workingBitmap?.Dispose();
+    workingBitmap = ImageProcessor.Adjust(
+        source,
+        trackBrightness.Value,   // -100..100
+        trackContrast.Value,     // -100..100
+        trackSaturation.Value    // -100..100
+    );
+    canvas.Image = workingBitmap;
+}
+```
+
+## Filters
+
+One-click filters replace the working bitmap entirely. They are applied on top of whatever `workingBitmap` currently contains and **are not reversible except with Revert**.
+
+<Accordion title="Grayscale (btnGray)">
+  Calls `ImageProcessor.ApplyGrayscale(Bitmap)`. Applies a ColorMatrix with standard luma weights:
+
+  ```
+  R' = 0.299·R + 0.587·G + 0.114·B
+  G' = R'
+  B' = R'
+  ```
+</Accordion>
+
+<Accordion title="Sepia (btnSepia)">
+  Calls `ImageProcessor.ApplySepia(Bitmap)`. Uses the classic sepia ColorMatrix:
+
+  ```
+  R' = 0.393·R + 0.769·G + 0.189·B
+  G' = 0.349·R + 0.686·G + 0.168·B
+  B' = 0.272·R + 0.534·G + 0.131·B
+  ```
+</Accordion>
+
+<Accordion title="Invert (btnInvert)">
+  Calls `ImageProcessor.InvertColors(Bitmap)`. Negates all channels:
+
+  ```
+  R' = 1 - R,  G' = 1 - G,  B' = 1 - B
+  ```
+
+  Implemented by a ColorMatrix with `−1` on the diagonal and `1` in the translation row for RGB channels.
+</Accordion>
+
+## Drawing Tools
+
+### Brush
+
+Toggle drawing mode with the **Brush** button (`btnBrush`). While active, the button label changes to `"Pintando..."`.
+
+- **Pick a color** — click the **Color** button (`btnColor`) to open a `ColorDialog`. The selected color is previewed in `panelColorPreview`.
+- **Adjust brush size** — drag `trackBrushSize` (minimum 1). The current size is shown in `lblBrushSizeValue`.
+- **Paint** — hold the left mouse button and drag across the canvas. Lines are drawn with `Graphics.DrawLine` using `LineCap.Round` on both ends and `SmoothingMode.AntiAlias`, giving smooth freehand strokes.
+
+### Crop
+
+Toggle crop mode with the **Crop** button (`btnCrop`). While active, the button label changes to `"Recortando... (Click y arrastra)"`.
+
+<Steps>
+  <Step title="Draw the crop rectangle">
+    Click and drag on the canvas to define the crop area. A dashed red rectangle is rendered live by `canvas_Paint` as you drag.
+  </Step>
+  <Step title="Release to apply">
+    On `MouseUp`, the canvas-space rectangle is mapped to actual image pixels and applied as a `Bitmap.Clone(cropRect, PixelFormat)` call.
+  </Step>
+  <Step title="Coordinate scaling">
+    The editor uses `GetImageDisplayRectangle` to calculate where the image sits inside the `PictureBox` when `SizeMode = Zoom`, then scales the drag coordinates with:
+
+    ```csharp
+    float scaleX = (float)workingBitmap.Width  / imgRect.Width;
+    float scaleY = (float)workingBitmap.Height / imgRect.Height;
+    int rx = (int)((cropRect.X - imgRect.X) * scaleX);
+    int ry = (int)((cropRect.Y - imgRect.Y) * scaleY);
+    ```
+  </Step>
+</Steps>
+
+<Note>
+  Crop coordinates are automatically scaled from canvas display coordinates to actual image pixel coordinates, so the crop is pixel-accurate regardless of the zoom level or the aspect ratio of the canvas panel.
+</Note>
+
+## Revert
+
+Click the **Revert** button (`btnRevert`) to discard all edits and return to the original file state.
+
+Revert:
+1. Clones `loadedBitmap` back into `workingBitmap`.
+2. Resets Brightness, Contrast, and Saturation sliders to `0`.
+3. Resets the brush size slider to `5` and updates `lblBrushSizeValue`.
+
+<Tip>
+  Use Revert any time you want to start fresh from the original image. Because `loadedBitmap` is never modified by editing operations, Revert always restores the exact pixels that were in the file when it was opened, no matter how many filters, strokes, or crops you applied.
+</Tip>
+
+## GPS Location
+
+The editor reads, displays, and can write back **EXIF GPS metadata** embedded in image files.
+
+### Reading GPS from EXIF
+
+When an image is opened, `ObtenerCoordenadas(Image img)` uses **MetadataExtractor** to parse the file:
+
+```csharp
+var directories = ImageMetadataReader.ReadMetadata(imagePath);
+var gpsDirectory = directories.OfType<GpsDirectory>().FirstOrDefault();
+var location = gpsDirectory.GetGeoLocation();
+// returns location.Latitude and location.Longitude
+```
+
+If GPS data is found, the decimal coordinates are shown in `txtCoordenadas` and the embedded map is loaded automatically.
+
+### Viewing the map
+
+`MostrarMapa(double lat, double lon)` builds a Google Maps embed URL and loads it inside a **WebView2** control (`webMapa`):
+
+```csharp
+string src = $"https://www.google.com/maps?q={lat},{lon}&z=10&output=embed";
+webMapa.NavigateToString(html); // html wraps the URL in a full-screen <iframe>
+```
+
+### Entering coordinates manually
+
+If an image has no GPS EXIF data, you can type coordinates directly into `txtCoordenadas` and click the **View** button (`btnVer`). The field accepts several formats:
+
+| Format | Example |
+|---|---|
+| Decimal, comma-separated | `26.79692, 101.42861` |
+| Degrees with cardinal | `26.79692° N, 101.42861° E` |
+
+### Opening in the browser
+
+Click **Open in Browser** (`btnMostrarUbicacion`) to launch `https://www.google.com/maps?q={lat},{lon}` in the system default browser via `Process.Start`.
+
+### Writing GPS back on save
+
+When saving as JPEG and GPS coordinates are available, `SaveImageWithGpsData` writes four EXIF `PropertyItem` entries into the file using GDI+ reflection:
+
+| EXIF Tag ID | Content |
+|---|---|
+| `0x0001` (GPSLatitudeRef) | `"N"` or `"S"` as ASCII |
+| `0x0002` (GPSLatitude) | Degrees, minutes, seconds as three EXIF Rationals |
+| `0x0003` (GPSLongitudeRef) | `"E"` or `"W"` as ASCII |
+| `0x0004` (GPSLongitude) | Degrees, minutes, seconds as three EXIF Rationals |
+
+Seconds are stored with 1/1000 precision (`secondsNum / 1000`).
+
+## Saving
+
+Click **Save** (`btnSave`) to open a `SaveFileDialog` with two format options:
+
+<Tabs>
+  <Tab title="PNG">
+    Saves `workingBitmap` using `ImageFormat.Png`. Lossless. GPS data is **not** embedded (PNG EXIF write is not supported in this version).
+  </Tab>
+  <Tab title="JPEG">
+    Saves using `ImageFormat.Jpeg`. If valid GPS coordinates are present (`lat != 0 || lon != 0`), they are written into the EXIF block via `SaveImageWithGpsData`. A success dialog confirms the result. If the EXIF write fails for any reason, the image is still saved without GPS data and a warning is shown.
+  </Tab>
+</Tabs>

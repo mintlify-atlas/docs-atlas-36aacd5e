@@ -1,64 +1,104 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "mint",
-  "name": "Mintlify Starter Kit",
+  "name": "Explorador de Archivos",
+  "theme": "maple",
   "colors": {
-    "primary": "#16A34A",
-    "light": "#07C983",
-    "dark": "#15803D"
-  },
-  "favicon": "/favicon.svg",
-  "navigation": {
-    "pages": ["index", "quickstart"],
-    "global": {
-      "anchors": [
-        {
-          "anchor": "Documentation",
-          "href": "https://mintlify.com/docs",
-          "icon": "book-open-cover"
-        },
-        {
-          "anchor": "Blog",
-          "href": "https://mintlify.com/blog",
-          "icon": "newspaper"
-        }
-      ]
-    }
-  },
-  "logo": {
-    "light": "/logo/light.svg",
-    "dark": "/logo/dark.svg"
+    "primary": "#3B6FD4",
+    "light": "#EEF3FB",
+    "dark": "#1A3A7A"
   },
   "navbar": {
-    "links": [
-      {
-        "label": "Support",
-        "href": "mailto:hi@mintlify.com"
-      }
-    ],
     "primary": {
-      "type": "button",
-      "label": "Dashboard",
-      "href": "https://dashboard.mintlify.com"
+      "type": "github",
+      "href": "https://github.com/XxLunaxX29/ExploradorDeArchivos"
     }
-  },
-  "contextual": {
-    "options": [
-     "copy",
-     "view",
-     "chatgpt",
-     "claude",
-     "perplexity",
-     "mcp",
-     "cursor",
-     "vscode"
-   ]
   },
   "footer": {
     "socials": {
-      "x": "https://x.com/mintlify",
-      "github": "https://github.com/mintlify",
-      "linkedin": "https://linkedin.com/company/mintlify"
+      "github": "https://github.com/XxLunaxX29/ExploradorDeArchivos"
     }
+  },
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Getting Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "requirements"
+            ]
+          },
+          {
+            "group": "File Explorer",
+            "pages": [
+              "features/file-browser",
+              "features/navigation",
+              "features/quick-access"
+            ]
+          },
+          {
+            "group": "Media",
+            "pages": [
+              "features/mp3-player",
+              "features/mp4-player",
+              "features/image-editor"
+            ]
+          },
+          {
+            "group": "Data Tools",
+            "pages": [
+              "features/data-viewer",
+              "features/data-cleaner",
+              "features/document-editor"
+            ]
+          },
+          {
+            "group": "Recording",
+            "pages": [
+              "features/recorder"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Reference",
+        "groups": [
+          {
+            "group": "Core Components",
+            "pages": [
+              "reference/form1",
+              "reference/formmp3",
+              "reference/formmp4",
+              "reference/form-editar-fotos",
+              "reference/formdatabase",
+              "reference/formcorrector",
+              "reference/formedit",
+              "reference/formgrabadora"
+            ]
+          },
+          {
+            "group": "Data Pipeline",
+            "pages": [
+              "reference/data-pipeline",
+              "reference/data-cleaner",
+              "reference/column-type-inferrer",
+              "reference/file-readers"
+            ]
+          },
+          {
+            "group": "Utilities",
+            "pages": [
+              "reference/image-processor",
+              "reference/music-metadata-fetcher",
+              "reference/playlist-global",
+              "reference/email-settings"
+            ]
+          }
+        ]
+      }
+    ]
   }
 }

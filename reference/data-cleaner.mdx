@@ -1,0 +1,161 @@
+---
+title: "DataCleaner — Type-Aware Data Cleaning Engine"
+sidebarTitle: "DataCleaner"
+description: "DataCleaner applies column-type-specific cleaning: character stripping for text, date normalization to yyyy-MM-dd, and numeric symbol removal with European decimal support."
+---
+
+`DataCleaner` is a `static` class that takes the raw rows produced by a file reader and the column-type map produced by `ColumnTypeInferrer`, then applies targeted cleaning rules to each cell based on its column's dominant type. Every transformation is recorded in a human-readable change log so downstream code — and end users — can audit exactly what changed.
+
+## Clean()
+
+```csharp
+public static (
+    IReadOnlyList<IDictionary<string, object>> CleanedRows,
+    IReadOnlyList<string> ChangeLog
+) Clean(
+    IReadOnlyList<IDictionary<string, object>> rows,
+    IReadOnlyDictionary<string, ColumnDataType> columnTypes
+)
+```
+
+<ParamField path="rows" type="IReadOnlyList<IDictionary<string, object>>" required>
+  The raw or pipeline-normalized rows to clean. Each dictionary maps column name → raw cell value.
+</ParamField>
+
+<ParamField path="columnTypes" type="IReadOnlyDictionary<string, ColumnDataType>" required>
+  A map of column name → inferred type, typically the `ColumnTypes` dictionary from `ColumnTypeInferrer.Infer()`. Columns absent from the map are passed through unchanged.
+</ParamField>
+
+### Returns
+
+<ResponseField name="CleanedRows" type="IReadOnlyList<IDictionary<string, object>>">
+  One cleaned dictionary per input row, in the same order. Values are replaced with their cleaned string representations.
+</ResponseField>
+
+<ResponseField name="ChangeLog" type="IReadOnlyList<string>">
+  One entry per cell whose value changed, formatted as:  
+  `Fila {n}, '{ColumnName}': "{original}" → "{cleaned}"`
+</ResponseField>
+
+---
+
+## CleanDate()
+
+```csharp
+public static string CleanDate(string value)
+```
+
+The only `public` single-value method. Attempts to parse `value` using `DateTime.TryParse` across three cultures (`InvariantCulture`, `es-ES`, `en-US`), then falls back to `DateTime.TryParseExact` with the full format list. Returns the normalized `yyyy-MM-dd` string on success, or the original value unchanged on failure.
+
+<ParamField path="value" type="string" required>
+  A raw date string in any supported format (see table below).
+</ParamField>
+
+---
+
+## Cleaning Rules by Column Type
+
+| Column Type | Rule Applied | Characters Removed | Example |
+|---|---|---|---|
+| **Text** (general) | `InvalidTextChars` regex | `[^\p{L}\p{N}\s\-.,;:!?'"()&]` — removes `*`, `@`, `#`, `^`, `~`, `$`, `%`, etc. | `"García*"` → `"García"` |
+| **Text** (person name) | `InvalidNameChars` regex | `[^\p{L}\s\-']` — only letters, spaces, hyphens, apostrophes | `"O'Brien123"` → `"O'Brien"` |
+| **Date** | `CleanDate()` | Parses and re-formats | `"15/01/2000"` → `"2000-01-15"` |
+| **Numeric** | `NonNumericChars` regex + decimal normalization | All except `[\d.,'-+]`; European thousands separator removed | `"$1.234,56"` → `"1234.56"` |
+
+After character removal, consecutive internal spaces are collapsed to a single space and the result is trimmed.
+
+### Supported Date Formats
+
+`CleanDate()` attempts over 20 format patterns across Spanish, English, and invariant cultures:
+
+| Pattern | Example |
+|---|---|
+| `yyyy-MM-dd` | `2000-01-15` |
+| `dd/MM/yyyy` | `15/01/2000` |
+| `MM/dd/yyyy` | `01/15/2000` |
+| `dd-MMM-yyyy` | `15-Jan-2000` |
+| `d MMM yyyy` | `15 Jan 2000` |
+| `MMM d, yyyy` | `Jan 15, 2000` |
+| `dd/MM/yy` | `15/01/00` |
+| `yyyy/M/d` | `2000/1/15` |
+| _+ 13 more_ | |
+
+---
+
+## Name Column Detection
+
+`DataCleaner` automatically applies the **stricter** `InvalidNameChars` regex (letters, spaces, hyphens, apostrophes only) to any column identified as a person name column. The detection logic (`IsNombrePersonaColumna`) uses the following rules:
+
+**Exact matches** (always treated as person name columns):
+`nombre`, `apellido`, `apellidos`, `name`, `surname`, `lastname`, `firstname`,
+`primer_nombre`, `segundo_nombre`, `primer_apellido`, `segundo_apellido`
+
+**Partial matches that qualify** (column name contains):
+`apellido`, `surname`, `lastname`, `firstname`
+
+**Partial matches on `nombre` / `name` — excluded if the column name also contains**:
+`producto`, `product`, `juego`, `game`, `video`, `empresa`, `company`,
+`comercial`, `marca`, `brand`, `categoria`, `category`, `archivo`, `file`,
+`cancion`, `song`, `pelicula`, `movie`, `libro`, `book`, `titulo`, `title`,
+`descripcion`, `description`
+
+This means `nombre_cliente` → person name column; `nombre_producto` → general text column.
+
+---
+
+## `ColumnDataType` Enum
+
+```csharp
+public enum ColumnDataType
+{
+    Text,
+    Numeric,
+    Date
+}
+```
+
+<ResponseField name="Text" type="enum member">
+  The column holds free-form text. Applies general or name-specific character stripping.
+</ResponseField>
+
+<ResponseField name="Numeric" type="enum member">
+  The column holds numbers. Strips currency symbols, spaces, and non-numeric characters; normalizes European comma decimals.
+</ResponseField>
+
+<ResponseField name="Date" type="enum member">
+  The column holds dates. Normalizes to `yyyy-MM-dd`; unrecognized values are left unchanged and logged.
+</ResponseField>
+
+---
+
+## ChangeLog Format
+
+Each entry in the returned `ChangeLog` uses this pattern:
+
+```
+Fila {rowNumber}, '{ColumnName}': "{originalValue}" → "{cleanedValue}"
+```
+
+Row numbers are 1-based. Cells whose values do not change produce no log entry, and empty/whitespace cells are skipped entirely.
+
+```csharp
+var inferrer = new ColumnTypeInferrer();
+var inferenceResult = inferrer.Infer(rows);
+
+var (cleanedRows, changeLog) = DataCleaner.Clean(rows, inferenceResult.ColumnTypes);
+
+foreach (var entry in changeLog)
+    Console.WriteLine(entry);
+// Fila 2, 'Nombre': "García*" → "García"
+// Fila 4, 'FechaNacimiento': "15/01/1990" → "1990-01-15"
+// Fila 7, 'Salario': "$1.234,56" → "1234.56"
+```
+
+<CardGroup cols={2}>
+  <Card title="ColumnTypeInferrer" href="/reference/column-type-inferrer">
+    Produces the ColumnDataType map consumed by DataCleaner
+  </Card>
+  <Card title="DataPipeline" href="/reference/data-pipeline">
+    Orchestrates normalization, validation, and ordering after cleaning
+  </Card>
+</CardGroup>

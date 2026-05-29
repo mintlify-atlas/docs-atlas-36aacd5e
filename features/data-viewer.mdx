@@ -1,0 +1,87 @@
+---
+title: "Data Fusion Arena: Import and Visualize Database Tables"
+sidebarTitle: "Data Viewer"
+description: "Connect to SQL Server, MariaDB, or PostgreSQL and import table data directly into Explorador de Archivos for grid display, ID-indexed lookup, and chart visualization."
+---
+
+The **Data Fusion Arena** module (`FormDataBase`) is the central hub for pulling live table data from relational databases into Explorador de Archivos. Once records are imported they are stored in a unified `List<DataItem>` collection (`_allItems`), displayed in a sortable DataGridView, and immediately available for chart generation and cross-source merging. You can import from multiple databases in the same session and the data accumulates seamlessly.
+
+## Connecting to a Database
+
+<Steps>
+  <Step title="Open Data Fusion Arena">
+    Click the **Database** button in the main toolbar. The `FormDataBase` window opens with one import button per supported engine.
+  </Step>
+  <Step title="Click the import button for your engine">
+    Choose **Import SQL Server**, **Import MariaDB**, or **Import PostgreSQL**. This calls `btnImportSqlServer_Click`, `btnImportMariaDb_Click`, or `btnImportPostgre_Click` respectively, each of which delegates to the shared `ImportFromDb()` method.
+  </Step>
+  <Step title="Enter connection details">
+    `DatabaseExporter.ShowImportDialog()` opens a modal form where you supply the server hostname, port, database name, username, and password. For SQL Server you can also enable Windows Authentication instead of a username and password pair.
+  </Step>
+  <Step title="List and select a table">
+    Click **List Tables**. The dialog calls `getTablesFunc(connectionString)` — one of `GetTablesSqlServer`, `GetTablesMariaDb`, or `GetTablesPostgreSql` — and populates a drop-down with every base table found in the target database. Select the table you want to import.
+  </Step>
+  <Step title="Data loads into the grid">
+    Clicking **Import** calls `readFunc(connStr, tableName)` — `DataReader.ReadFromSqlServer`, `ReadFromMariaDb`, or `ReadFromPostgreSql` — which executes a `SELECT *` against the chosen table and returns rows as `List<DataItem>`. The items are appended to `_allItems`, `DataProcessor.BuildIdIndex()` rebuilds the ID lookup dictionary, and `FillDataGridView()` renders the updated dataset.
+  </Step>
+</Steps>
+
+## Supported Databases
+
+| Database   | Default Port | NuGet Driver               |
+|------------|-------------|----------------------------|
+| SQL Server | 1433        | `Microsoft.Data.SqlClient` |
+| MariaDB    | 3306        | `MySqlConnector`           |
+| PostgreSQL | 5432        | `Npgsql`                   |
+
+<Note>
+  Connection strings are built automatically from the dialog inputs. The formats used are:
+
+  ```
+  # SQL Server (credentials)
+  Server=localhost,1433;Database=MyDb;User Id=sa;Password=***;TrustServerCertificate=true;
+
+  # SQL Server (Windows Authentication)
+  Server=localhost,1433;Database=MyDb;Trusted_Connection=true;TrustServerCertificate=true;
+
+  # MariaDB
+  Server=localhost;Port=3306;Database=MyDb;User=root;Password=***;
+
+  # PostgreSQL
+  Host=localhost;Port=5432;Database=MyDb;Username=postgres;Password=***;
+  ```
+</Note>
+
+## Data Grid
+
+After a successful import, `FillDataGridView()` converts `_allItems` into a `DataTable` and binds it to the `DataGridView`. Key behaviours:
+
+- **Columns are dynamically discovered.** Fixed `DataItem` properties (ID, Company, Price, Title, etc.) always appear first; any extra columns read from the database are appended automatically via `ExtraFields`.
+- **Empty columns are hidden.** Any column whose every cell is blank or zero is set to `Visible = false`, keeping the grid uncluttered.
+- **Monetary columns are right-aligned** and formatted as `$#,##0.00`. The formatter recognises column names that contain keywords such as `price`, `cost`, `monto`, `amount`, `revenue`, and `sales`.
+- **Row colour coding** distinguishes the data source at a glance: database rows (`DB`) are tinted yellow, CSV rows are light blue, JSON rows are light orange, and so on.
+- The **status bar** (`lblStatus`) reports how many records were imported from the current operation and the running total across all sources, e.g. `Importados 842 registros desde SQL Server [Ventas] (Total: 1 205)`. The row-count label (`lblRowCount`) updates to reflect any active source filter.
+- **Fast ID lookup** is powered by `DataProcessor.BuildIdIndex(_allItems)`, which builds a `Dictionary<int, DataItem>`. Every import rebuilds this index so that a record can be retrieved by its integer ID in O(1) time regardless of how many sources have been merged.
+
+## Merging Multiple Sources
+
+`_allItems` is never cleared between imports within the same session — each call to `ImportFromDb()` calls `_allItems.AddRange(dbItems)`. This means you can import a table from SQL Server, then import a second table from PostgreSQL, and the grid will show both sets of records side by side with their respective source labels. The source filter combo-box (`cmbSourceFilter`) lets you narrow the view to a single origin without losing the other data.
+
+<Warning>
+  All imported data is held in memory for the lifetime of the session. Importing very large tables (hundreds of thousands of rows) will consume a proportional amount of RAM and may slow down grid rendering and chart generation. Use server-side filtering or `SELECT TOP N` queries when working with high-volume tables.
+</Warning>
+
+## Charts
+
+Clicking **Generate Chart** produces up to four automatic chart types from the last imported batch (`_lastImportedItems`). If no import has been performed yet, the full `_allItems` list is used instead.
+
+`DataProcessor.AutoDetectSmartPairs()` scans the dataset for up to four categorical–numeric field combinations with the highest cardinality and value variance. Each pair drives a different chart:
+
+| Chart type | Description |
+|------------|-------------|
+| **Bar** (`chartAutoBar`) | Best pair — compares aggregated values across categories (up to 15 bars) |
+| **Pie** (`chartAutoPie`) | Second-best pair — shows proportional distribution (up to 10 slices) |
+| **Doughnut** (`chartAutoDoughnut`) | Third-best pair — variant of the pie with a hollow centre |
+| **Line** (`chartAutoLine`) | Numeric time-series or ranking data (up to 50 points per series, max 4 series) |
+
+An ASCII console equivalent of the bar and line charts can also be rendered to the **Console** tab via **Chart Console**, using `ConsoleVisualizer.RenderBarChart()` and `RenderSparkLines()`.

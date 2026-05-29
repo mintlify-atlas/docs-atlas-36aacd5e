@@ -1,0 +1,150 @@
+---
+title: "Screen, Audio, and Webcam Recorder"
+sidebarTitle: "Recorder"
+description: "Record audio, screen activity, or webcam footage in Explorador de Archivos. Output is saved automatically to your local application data Grabaciones folder."
+---
+
+`FormGrabadora` is the built-in recorder window in Explorador de Archivos. It supports three distinct capture modes — microphone-only audio, full-screen video with audio, and webcam video with audio — all driven by a timer-based capture loop running at 30 FPS. Audio is captured via NAudio's `WaveInEvent`, screen frames are grabbed with `Graphics.CopyFromScreen`, and webcam frames are streamed through AForge's DirectShow pipeline. When a video recording is stopped, the collected frames and audio track are merged into a final MP4 file using FFMpeg.
+
+## Recording Modes
+
+<Tabs>
+  <Tab title="Audio Only">
+    Records microphone input as a standard WAV file. No video frames are captured and no FFMpeg post-processing is required.
+
+    - Audio engine: **NAudio** (`WaveInEvent`)
+    - Sample rate: **44,100 Hz**, 16-bit stereo
+    - Output format: `.wav`
+    - The output file is written directly to `%LocalAppData%\Grabaciones\` on stop
+
+    ```csharp
+    _waveInEvent = new WaveInEvent
+    {
+        DeviceNumber = deviceIndex,
+        WaveFormat = new WaveFormat(44100, 16, 2)
+    };
+    _waveFileWriter = new WaveFileWriter(_recordingFilePath, _waveInEvent.WaveFormat);
+    _waveInEvent.StartRecording();
+    ```
+  </Tab>
+  <Tab title="Screen + Audio">
+    Captures the full primary display at 1280 × 720 @ 30 FPS using `Graphics.CopyFromScreen`, while simultaneously recording microphone audio with NAudio. After recording stops, the frame sequence and audio track are merged into an MP4 via FFMpeg.
+
+    - Screen capture: **Graphics.CopyFromScreen** into a `List<Bitmap>`
+    - Frame interval: `1000 / VIDEO_FPS` ms (~33 ms per frame)
+    - Audio: NAudio `WaveInEvent` at 44,100 Hz
+    - Post-processing: FFMpeg merges frames + WAV → final MP4
+
+    ```csharp
+    _timerVideoCapture.Interval = 1000 / VIDEO_FPS; // 33 ms
+    _timerVideoCapture.Tick += TimerVideoCapture_Tick;
+
+    // Inside TimerVideoCapture_Tick:
+    _graphics.CopyFromScreen(0, 0, 0, 0, _frameBuffer.Size);
+    _videoFrames.Add(cloneFrame);
+    ```
+  </Tab>
+  <Tab title="Webcam + Audio">
+    Streams live frames from the first available DirectShow-compatible camera using AForge.Video.DirectShow, while simultaneously recording microphone audio. After recording stops, the captured frames and audio are merged into an MP4 via FFMpeg.
+
+    - Camera library: **AForge.Video.DirectShow** (`FilterInfoCollection`, `VideoCaptureDevice`)
+    - Device selection: first device in `FilterInfoCollection(FilterCategory.VideoInputDevice)`
+    - Frame rate: 30 FPS (controlled by `_cameraTimer`, interval 33 ms)
+    - Audio: NAudio `WaveInEvent` at 44,100 Hz
+    - Post-processing: FFMpeg merges frames + WAV → final MP4
+    - A live preview is displayed in the `PictureBox` embedded in the form
+
+    ```csharp
+    _videoSource = new VideoCaptureDevice(_videoDevices[0].MonikerString);
+    _videoSource.NewFrame += VideoSource_NewFrame;
+    _videoSource.Start();
+    ```
+  </Tab>
+</Tabs>
+
+## Output Files
+
+Recordings are always saved to:
+
+```
+%LocalAppData%\Grabaciones\
+```
+
+The folder is created automatically on first launch if it does not already exist. File naming follows the pattern below:
+
+| Mode | File name pattern | Format |
+|---|---|---|
+| Audio Only | `audio_YYYYMMDD_HHmmss.wav` | WAV |
+| Screen + Audio | `video_pantalla_YYYYMMDD_HHmmss.mp4` | MP4 |
+| Webcam + Audio | `video_camara_YYYYMMDD_HHmmss.mp4` | MP4 |
+
+For video modes, an intermediate temporary audio file is written to the system `%TEMP%` folder during recording. After stopping, the collected PNG frames and the temporary WAV are passed to FFMpeg, which assembles them into the final MP4. Both temporary files are deleted automatically once the MP4 is confirmed on disk.
+
+<Tip>
+  To quickly access your recordings, open File Explorer and type `%LocalAppData%\Grabaciones` directly into the address bar, then press **Enter**.
+</Tip>
+
+## Technical Specifications
+
+| Specification | Value |
+|---|---|
+| Video Resolution | 1280 × 720 |
+| Frame Rate | 30 FPS |
+| Audio Sample Rate | 44,100 Hz |
+| Audio Library | NAudio (`WaveInEvent`) |
+| Screen Capture | `Graphics.CopyFromScreen` |
+| Camera Capture | AForge.Video.DirectShow |
+| Video Assembly | SharpAvi + FFMpegCore |
+
+## Using the Recorder
+
+<Steps>
+  <Step title="Open FormGrabadora">
+    Click the **Recorder** button in the main toolbar of Explorador de Archivos. The `FormGrabadora` window opens and immediately initialises the recordings folder, audio devices, preview box, and camera.
+  </Step>
+  <Step title="Select a recording mode">
+    Use the mode toggle buttons to choose between:
+    - **Audio Only** — microphone only, no video
+    - **Screen + Audio** — full-screen capture plus microphone
+    - **Webcam + Audio** — camera feed plus microphone
+  </Step>
+  <Step title="Click Start Recording">
+    Press **Start Recording**. The elapsed-time counter starts, and the status label updates to reflect the active mode. For video modes, a live preview appears in the embedded preview box.
+  </Step>
+  <Step title="Perform your actions or speak">
+    Carry out whatever you want to capture. The elapsed time is tracked by `_timerRecordingTime` (updated every second) and measured precisely by `_stopwatch`.
+  </Step>
+  <Step title="Click Stop Recording">
+    Press **Stop Recording**. Audio capture halts immediately. For video modes, the application enters a saving state — the button label changes to **Saving…** while FFMpeg assembles the final file in a background thread.
+  </Step>
+  <Step title="Retrieve your file">
+    Once saving completes, a confirmation dialog displays the file name, size, and location. Your recording is now in `%LocalAppData%\Grabaciones\`.
+  </Step>
+</Steps>
+
+## Camera Preview
+
+When **Webcam + Audio** mode is active, a `PictureBox` (550 × 420 px, `SizeMode = Zoom`) is shown on the right side of the form. Each frame received from the DirectShow device is cloned and rendered into the preview box in real time via a thread-safe `Invoke` call:
+
+```csharp
+_previewBox.Invoke(new Action(() => {
+    _previewBox.Image?.Dispose();
+    _previewBox.Image = imgPreview;
+}));
+```
+
+In **Screen + Audio** mode the same preview box is used to display a thumbnail of the current screen frame so you can confirm the capture area at a glance. The preview box is hidden when no recording is active.
+
+<Note>
+  The first available DirectShow-compatible camera is selected automatically via `_videoDevices[0]`. If `FilterInfoCollection` returns zero devices, camera mode is unavailable and attempting to start a webcam recording will display an error dialog.
+</Note>
+
+<Warning>
+  Screen and webcam recordings require FFMpeg to produce the final merged MP4 file. The binary **must** be present at the following path relative to the application executable:
+
+  ```
+  ffmpeg\bin\ffmpeg.exe
+  ```
+
+  If FFMpeg is missing, the frame and audio data will be collected correctly during recording, but the post-processing step will fail and no output file will be written.
+</Warning>

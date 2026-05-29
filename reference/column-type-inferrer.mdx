@@ -1,0 +1,168 @@
+---
+title: "ColumnTypeInferrer — Detect Column Data Types"
+sidebarTitle: "ColumnTypeInferrer"
+description: "ColumnTypeInferrer samples column values to determine dominant types (Text, Numeric, Date) and produces a CellError list highlighting mismatched values."
+---
+
+`ColumnTypeInferrer` examines a collection of rows and, for each column, determines its dominant `ColumnDataType` by counting how many non-empty cells parse successfully as a numeric or date value. Columns that exceed a configurable threshold are classified as `Numeric` or `Date`; all others fall back to `Text`. A second pass then scans every cell for anomalies in both directions — text in a numeric column or a bare number in a text column — and reports them as `CellError` entries.
+
+## Infer()
+
+```csharp
+public InferenceResult Infer(
+    IReadOnlyList<IDictionary<string, object>> rows
+)
+```
+
+<ParamField path="rows" type="IReadOnlyList<IDictionary<string, object>>" required>
+  The row collection to analyze. Column names are taken from the keys of the first row. Empty collections return an empty `InferenceResult` with no errors.
+</ParamField>
+
+### Returns — `InferenceResult`
+
+```csharp
+public sealed record InferenceResult(
+    IReadOnlyDictionary<string, ColumnDataType> ColumnTypes,
+    IReadOnlyList<CellError> CellErrors
+);
+```
+
+<ResponseField name="ColumnTypes" type="IReadOnlyDictionary<string, ColumnDataType>">
+  Maps every column name to its inferred `ColumnDataType` (`Text`, `Numeric`, or `Date`). Keys use `OrdinalIgnoreCase` comparison. Pass this directly to `DataCleaner.Clean()`.
+</ResponseField>
+
+<ResponseField name="CellErrors" type="IReadOnlyList<CellError>">
+  All cells whose value is inconsistent with the column's dominant type, sorted by row index. See the `CellError` model below.
+</ResponseField>
+
+---
+
+## Thresholds
+
+`ColumnTypeInferrer` exposes two `init`-settable properties that control classification sensitivity:
+
+<ParamField path="Threshold" type="double" default="0.70">
+  The minimum proportion of non-empty cells that must parse as a given type for the column to be classified as `Numeric` or `Date`. A value of `0.70` means at least 70 % of cells must match.
+</ParamField>
+
+<ParamField path="NumericInTextThreshold" type="double" default="0.05">
+  For `Text` columns: the proportion of cells that are purely numeric above which those cells are flagged as `UnexpectedNumeric` errors. At `0.05`, even a single numeric cell in a 20-row text column triggers an error.
+</ParamField>
+
+```csharp
+var inferrer = new ColumnTypeInferrer
+{
+    Threshold = 0.80,             // stricter: 80 % must match
+    NumericInTextThreshold = 0.10 // more lenient: 10 % trigger numeric anomaly
+};
+
+var result = inferrer.Infer(rows);
+```
+
+---
+
+## Type Inference Logic
+
+Inference runs per-column in three modes depending on **column name semantics**:
+
+| Column Name Contains | Forced Behavior |
+|---|---|
+| `expediente`, `numero`, `id`, `codigo`, `folio`, `clave`, `cuenta`, `cantidad`, `monto`, `precio`, `importe`, `total`, `saldo`, `telefono`, `cp`, `zip`, `edad`, `age` | Always `Numeric`; date parsing is skipped entirely |
+| `fecha`, `date`, `nacimien`, `birth`, `dob`, `año`, `anio`, `year`, `vencim`, `expir`, `inicio`, `fin`, `alta`, `baja` | Date has priority; threshold is lowered to 50 % |
+| All other columns | Date checked first (prevents `01/01/1990` counting as numeric), then numeric, then `Text` |
+
+Purely numeric strings (e.g. `"20001231"`) are **not** recognized as dates unless the column name signals date semantics. This avoids misclassifying ID-like numbers.
+
+---
+
+## `CellError` Model
+
+```csharp
+public sealed record CellError(
+    int RowIndex,
+    string ColumnName,
+    string ActualValue,
+    ColumnDataType ExpectedType,
+    CellErrorKind ErrorKind
+);
+```
+
+<ResponseField name="RowIndex" type="int">
+  Zero-based index of the row in the input list where the anomalous cell was found.
+</ResponseField>
+
+<ResponseField name="ColumnName" type="string">
+  The name of the column as it appears in the row dictionary key.
+</ResponseField>
+
+<ResponseField name="ActualValue" type="string">
+  The raw string value of the offending cell.
+</ResponseField>
+
+<ResponseField name="ExpectedType" type="ColumnDataType">
+  The dominant type inferred for this column (`Text`, `Numeric`, or `Date`).
+</ResponseField>
+
+<ResponseField name="ErrorKind" type="CellErrorKind">
+  Classifies the nature of the mismatch. See `CellErrorKind` below.
+</ResponseField>
+
+---
+
+## `CellErrorKind` Enum
+
+```csharp
+public enum CellErrorKind
+{
+    UnexpectedNumeric,
+    UnexpectedText,
+    UnexpectedDate
+}
+```
+
+<ResponseField name="UnexpectedNumeric" type="enum member">
+  A purely numeric value was found in a column whose dominant type is `Text`. Indicates a possible data entry mistake or mixed column.
+</ResponseField>
+
+<ResponseField name="UnexpectedText" type="enum member">
+  A non-numeric value was found in a `Numeric` column — e.g. a currency symbol that survived import, or a literal `"N/A"`.
+</ResponseField>
+
+<ResponseField name="UnexpectedDate" type="enum member">
+  A value in a `Date` column could not be parsed as any recognized date format.
+</ResponseField>
+
+---
+
+## Usage Example
+
+```csharp
+var reader  = new CsvFileReader();
+var rows    = reader.ReadFile("clientes.csv").ToList();
+
+var inferrer = new ColumnTypeInferrer();
+var result   = inferrer.Infer(rows);
+
+// Pass the type map to DataCleaner
+var (cleanedRows, changeLog) = DataCleaner.Clean(rows, result.ColumnTypes);
+
+// Inspect anomalies
+foreach (var error in result.CellErrors)
+{
+    Console.WriteLine(
+        $"Row {error.RowIndex}, '{error.ColumnName}': " +
+        $"'{error.ActualValue}' is {error.ErrorKind} " +
+        $"(expected {error.ExpectedType})");
+}
+// Row 5, 'Estado': '42' is UnexpectedNumeric (expected Text)
+// Row 9, 'Monto': 'N/A' is UnexpectedText (expected Numeric)
+```
+
+<CardGroup cols={2}>
+  <Card title="DataCleaner" href="/reference/data-cleaner">
+    Consumes ColumnTypes to apply type-specific cleaning rules
+  </Card>
+  <Card title="DataPipeline" href="/reference/data-pipeline">
+    Orchestrates the full normalize → validate → order flow
+  </Card>
+</CardGroup>

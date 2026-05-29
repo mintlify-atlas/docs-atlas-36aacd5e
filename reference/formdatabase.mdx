@@ -1,0 +1,180 @@
+---
+title: "FormDataBase — Database Import and Data Visualization"
+sidebarTitle: "FormDataBase"
+description: "FormDataBase orchestrates connection to SQL Server, MariaDB, and PostgreSQL, imports table rows as DataItem objects, and displays them with charts."
+---
+
+`FormDataBase` is the main Data Fusion Arena window. It manages the full lifecycle of multi-source data: importing from relational databases (SQL Server, MariaDB, PostgreSQL) and flat files (CSV, JSON, XML, TXT, XLSX, DOCX), merging every result into a unified `List<DataItem>`, maintaining a fast `Dictionary<int, DataItem>` lookup index, rendering rows in a colour-coded `DataGridView`, and auto-generating four WinForms chart types from the current dataset.
+
+---
+
+## Overview
+
+When an import succeeds the form appends new rows to `_allItems`, rebuilds `_idIndex` via `DataProcessor.BuildIdIndex`, then calls `FillDataGridView()` to refresh the grid and switches `tabControl` to the data tab. The status bar (`lblStatus`) always shows how many records were added and the running total. Auto-generated charts (bar, pie, doughnut, line) are produced in a separate tab by `btnGenerateChart_Click`, which delegates field discovery and grouping entirely to `DataProcessor`.
+
+---
+
+## Key Fields
+
+| Field | Type | Purpose |
+|---|---|---|
+| `_allItems` | `List<DataItem>` | Master list that accumulates every imported record across all sessions and sources. |
+| `_lastImportedItems` | `List<DataItem>` | Snapshot of the most recently imported batch; used as the preferred source when generating charts. |
+| `_idIndex` | `Dictionary<int, DataItem>` | O(1) lookup index rebuilt by `DataProcessor.BuildIdIndex` after every import. |
+| `MaxBarCategories` | `const int = 15` | Maximum number of bar columns rendered before truncation to "Top N". |
+| `MaxPieSlices` | `const int = 10` | Maximum slices shown in pie and doughnut charts. |
+| `MaxLinePoints` | `const int = 50` | Maximum data points sampled per series in the line chart. |
+
+---
+
+## Methods
+
+### `ImportFromDb`
+
+Shared orchestrator called by all three database import buttons. Displays the connection dialog, fetches the list of available tables, reads rows from the chosen table, merges them into `_allItems`, and refreshes the UI.
+
+```csharp
+private void ImportFromDb(
+    string dbName,
+    string defaultPort,
+    Func<string, List<string>> getTablesFunc,
+    Func<string, string, List<DataItem>> readFunc)
+```
+
+<ParamField path="dbName" type="string">
+  Human-readable engine name shown in dialogs and status messages, e.g. `"SQL Server"`, `"MariaDB"`, `"PostgreSQL"`.
+</ParamField>
+
+<ParamField path="defaultPort" type="string">
+  Pre-filled port in the connection dialog. SQL Server → `"1433"`, MariaDB → `"3306"`, PostgreSQL → `"5432"`.
+</ParamField>
+
+<ParamField path="getTablesFunc" type="Func<string, List<string>>">
+  Delegate that, given a connection string, returns the list of user tables. Maps to `DatabaseExporter.GetTablesSqlServer`, `GetTablesMariaDb`, or `GetTablesPostgreSql`.
+</ParamField>
+
+<ParamField path="readFunc" type="Func<string, string, List<DataItem>>">
+  Delegate that reads every row from `(connectionString, tableName)` and returns them as `DataItem` objects. Maps to `DataReader.ReadFromSqlServer`, `ReadFromMariaDb`, or `ReadFromPostgreSql`.
+</ParamField>
+
+---
+
+### `FillDataGridView`
+
+Converts `_allItems` (optionally filtered by `cmbSourceFilter`) into a `DataTable` and binds it to `dgvData`. Hides columns that are entirely empty or zero, applies currency formatting (`$#,##0.00`) to price/sales columns, and colour-codes each row by its source.
+
+```csharp
+private void FillDataGridView()
+```
+
+---
+
+### `ImportFile`
+
+Opens an `OpenFileDialog` restricted to the supplied filter string, calls `DataReader.LoadFromFile(path)`, and merges the result into `_allItems`.
+
+```csharp
+private void ImportFile(string filter)
+```
+
+<ParamField path="filter" type="string">
+  WinForms file-filter string, e.g. `"Archivos CSV|*.csv"`. An "All files" entry is appended automatically.
+</ParamField>
+
+---
+
+### `ExportToDb`
+
+Generic helper that wraps a database export action in a wait cursor and shows success/error dialogs.
+
+```csharp
+private void ExportToDb(string dbName, Func<int> exportAction)
+```
+
+<ParamField path="dbName" type="string">
+  Engine name for error messages.
+</ParamField>
+
+<ParamField path="exportAction" type="Func<int>">
+  Parameterless lambda that calls the appropriate `DatabaseExporter.ExportTo*` overload and returns the number of rows written.
+</ParamField>
+
+---
+
+### Chart fill helpers
+
+Four private methods populate each WinForms `Chart` control from a pre-grouped `Dictionary<string, double>` or series dictionary.
+
+```csharp
+private void FillAutoBarChart(
+    Dictionary<string, double> data,
+    string catLabel, string valLabel, string aggLabel = "Total")
+
+private void FillAutoPieChart(
+    Dictionary<string, double> data,
+    string catLabel, string valLabel, string aggLabel = "Total")
+
+private void FillAutoDoughnutChart(
+    Dictionary<string, double> data,
+    string catLabel, string valLabel, string aggLabel = "Total")
+
+private void FillAutoLineChart(Dictionary<string, List<double>> seriesData)
+```
+
+Each method calls `ResetChart(chart)` before populating, applies `DataProcessor.LimitTopN` to enforce the `MaxBarCategories` / `MaxPieSlices` caps, and uses an internal 10-colour palette via `GetColor(int index)`.
+
+---
+
+### `HasData`
+
+Guard used by all export buttons. Shows an information dialog and returns `false` when `_allItems` is empty.
+
+```csharp
+private bool HasData()
+```
+
+---
+
+## Events / Button Handlers
+
+| Handler | Trigger | Behaviour |
+|---|---|---|
+| `btnImportSqlServer_Click` | "Importar SQL Server" button | Calls `ImportFromDb("SQL Server", "1433", DatabaseExporter.GetTablesSqlServer, DataReader.ReadFromSqlServer)`. |
+| `btnImportMariaDb_Click` | "Importar MariaDB" button | Calls `ImportFromDb("MariaDB", "3306", DatabaseExporter.GetTablesMariaDb, DataReader.ReadFromMariaDb)`. |
+| `btnImportPostgre_Click` | "Importar PostgreSQL" button | Calls `ImportFromDb("PostgreSQL", "5432", DatabaseExporter.GetTablesPostgreSql, DataReader.ReadFromPostgreSql)`. |
+| `btnImportCsv_Click` | CSV import button | Calls `ImportFile("Archivos CSV\|*.csv")`. |
+| `btnImportJson_Click` | JSON import button | Calls `ImportFile("Archivos JSON\|*.json")`. |
+| `btnImportXml_Click` | XML import button | Calls `ImportFile("Archivos XML\|*.xml")`. |
+| `btnImportTxt_Click` | TXT import button | Calls `ImportFile("Archivos de texto\|*.txt")`. |
+| `btnImportXlsx_Click` | XLSX import button | Calls `ImportFile("Archivos Excel\|*.xlsx")`. |
+| `btnImportDocx_Click` | DOCX import button | Calls `ImportFile("Archivos Word\|*.docx")`. |
+| `btnExportSql_Click` | "Exportar SQL Server" button | Shows export dialog then calls `DatabaseExporter.ExportToSqlServer`. |
+| `btnExportMariaDb_Click` | "Exportar MariaDB" button | Shows export dialog then calls `DatabaseExporter.ExportToMariaDb`. |
+| `btnExportPostgre_Click` | "Exportar PostgreSQL" button | Shows export dialog then calls `DatabaseExporter.ExportToPostgreSql`. |
+| `btnClearData_Click` | "Limpiar" button | Confirms with the user, then clears `_allItems`, `_idIndex`, all four charts, and the console `RichTextBox`. |
+| `btnProcess_Click` | "Procesar" button | Runs Insertion Sort, Bubble Sort, percentile filter, group aggregation, duplicate detection, and ID lookup against `_allItems`; prints results to `rtbConsole`. |
+| `btnGenerateChart_Click` | "Generar Gráfica" button | Calls `DataProcessor.AutoDetectSmartPairs` and `AutoDetectLineSeries`, then populates all four chart controls and switches to the chart tab. |
+| `btnConsole_Click` | "Ver Consola" button | Renders `_allItems` as an ASCII table via `ConsoleVisualizer.RenderDynamicTable` and switches to the console tab. |
+| `btnChartConsole_Click` | "Gráfica Consola" button | Renders ASCII bar, pie, sparkline, and vertical-line charts in `rtbConsole`. |
+| `cmbSourceFilter_SelectedIndexChanged` | Source filter ComboBox | Calls `FillDataGridView()` to re-filter the grid by the chosen source. |
+| `btnExportFileJson_Click` | "Exportar JSON" button | Serialises `_allItems` to a JSON file via `ExportItemsToJson`. |
+| `btnExportFileTxt_Click` | "Exportar TXT" button | Writes pipe-delimited text via `ExportItemsToTxt`. |
+| `btnExportFileXml_Click` | "Exportar XML" button | Writes an XML document via `ExportItemsToXml`. |
+| `btnExportFileXlsx_Click` | "Exportar XLSX" button | Creates an OpenXml spreadsheet from `_allItems`. |
+| `btnExportFileCsv_Click` | "Exportar CSV" button | Writes a quoted CSV file. |
+
+---
+
+## Related Components
+
+<CardGroup cols={2}>
+  <Card title="FormCorrector" href="/reference/formcorrector">
+    Validates and auto-cleans imported datasets using DataPipeline and ColumnTypeInferrer.
+  </Card>
+  <Card title="FormEdit" href="/reference/formedit">
+    Opens and edits individual CSV, Excel, Word, and text files.
+  </Card>
+  <Card title="FormGrabadora" href="/reference/formgrabadora">
+    Records audio, screen capture, or webcam footage using NAudio and AForge.
+  </Card>
+</CardGroup>

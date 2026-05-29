@@ -1,0 +1,86 @@
+---
+title: "Explorador de Archivos: Your All-in-One Windows File Manager"
+sidebarTitle: "Introduction"
+description: "Explorador de Archivos is a .NET 8 WinForms desktop app that combines file browsing, media playback, image editing, data tools, and screen recording in a single window."
+---
+
+Explorador de Archivos is a feature-rich Windows desktop application built with C# and .NET 8 WinForms. It brings together an entire suite of productivity and media tools — file browsing, MP3 and MP4 playback, image editing, SQL-based data viewing, structured data cleaning, document editing, and screen/audio recording — all accessible from a single, unified window. Designed exclusively for Windows and compiled as a `WinExe` targeting `net8.0-windows`, it leverages the full power of the Windows Forms platform alongside a rich ecosystem of NuGet libraries.
+
+<Note>
+  Explorador de Archivos runs on **Windows 10 or later (64-bit) only**. It uses WinForms APIs and Windows-specific runtime features that are not available on macOS or Linux.
+</Note>
+
+## Feature Areas
+
+Explore the individual modules that make up Explorador de Archivos:
+
+<CardGroup cols={2}>
+  <Card title="File Browser" icon="folder-open" href="/features/file-browser">
+    Navigate your entire file system with a dual-pane grid view, quick-access shortcuts, drive listing, navigation history, and automatic file-type icons.
+  </Card>
+  <Card title="MP3 Player" icon="music" href="/features/mp3-player">
+    Play audio files with playlist support, automatic song queuing from the file browser, and rich metadata display powered by NAudio and TagLibSharp.
+  </Card>
+  <Card title="MP4 Player" icon="film" href="/features/mp4-player">
+    Stream and play video files (MP4, AVI, MKV, MOV) using LibVLCSharp.WinForms with hardware-accelerated decoding provided by VideoLAN.LibVLC.Windows.
+  </Card>
+  <Card title="Image Editor" icon="image" href="/features/image-editor">
+    Open and edit images (JPG, PNG, GIF) directly from the file grid. The editor launches automatically when you double-click any supported image file.
+  </Card>
+  <Card title="Data Viewer" icon="database" href="/features/data-viewer">
+    Connect to MySQL, PostgreSQL, and SQL Server databases using MySqlConnector, Npgsql, and Microsoft.Data.SqlClient to browse, query, and visualize tabular data.
+  </Card>
+  <Card title="Data Cleaner" icon="broom" href="/features/data-cleaner">
+    Import, validate, and clean structured data from CSV, Excel, JSON, XML, and Word documents using CsvHelper, DocumentFormat.OpenXml, and FluentValidation.
+  </Card>
+  <Card title="Document Editor" icon="file-pen" href="/features/document-editor">
+    Create and edit rich documents with an embedded editor that supports HTML rendering via Microsoft.Web.WebView2 and structured file formats via HtmlAgilityPack.
+  </Card>
+  <Card title="Screen & Audio Recorder" icon="circle-dot" href="/features/recorder">
+    Capture your screen and system audio simultaneously using SharpAvi, AForge.Video, and FFMpegCore. Output is written to a local file via FFMpeg.
+  </Card>
+</CardGroup>
+
+## Architecture Overview
+
+The application follows a **shell-and-child-forms** architecture. `Form1` acts as the central shell: it owns the file browser grid, the quick-access sidebar, the navigation toolbar, and the path bar. It is the only form that runs directly from the entry point in `Program.cs`:
+
+```csharp
+// Program.cs — application entry point
+[STAThread]
+static void Main()
+{
+    ApplicationConfiguration.Initialize();
+    Application.Run(new Form1());
+}
+```
+
+When a user double-clicks a media file or clicks a toolbar button, `Form1` lazily instantiates the appropriate child form and calls a method on it to load the relevant content. Each child form is kept as a private field on `Form1` and is re-used if it is already open, or recreated if it was previously closed. This means all sub-tools run as independent, resizable top-level windows rather than embedded panels, giving each module its own dedicated workspace without cluttering the main file browser.
+
+```csharp
+// Form1.cs — child form instances (lazy-initialized)
+private FormMP3         _formMP3;
+private FormMP4         _formMP4;
+private FormDataBase    _formDataBase;
+private FormCorrector   _formCorrector;
+private FormEdit        _formEdit;
+private FormGrabadora   _formGrabadora;
+private FormEditarFotos _formEditarFotos;
+```
+
+When `Form1` closes, it gracefully shuts down any open media forms — calling `CerrarCompletamente()` on `FormMP3` to release audio resources and closing `FormMP4` to free the VLC engine — before the process exits.
+
+## Module Summary
+
+The table below lists every major module, the WinForms class that implements it, and the core functionality each one provides.
+
+| Module | Form Class | Key Functionality |
+|---|---|---|
+| File Browser | `Form1` | Dual-pane `DataGridView`, quick-access sidebar, navigation history stack, drive enumeration, path bar |
+| MP3 Player | `FormMP3` | Audio playback, playlist management, auto-queue on file select, metadata via TagLibSharp |
+| MP4 Player | `FormMP4` | Video playback with LibVLCSharp, auto-open on double-click of video files |
+| Image Editor | `FormEditarFotos` | Image loading and editing, auto-open on double-click of image files |
+| Data Viewer | `FormDataBase` | Multi-database connectivity (MySQL, PostgreSQL, SQL Server), tabular query results |
+| Data Cleaner | `FormCorrector` | CSV/Excel/JSON/XML/Word import, validation with FluentValidation, data correction |
+| Document Editor | `FormEdit` | Rich document authoring with WebView2 HTML rendering and OpenXml file support |
+| Screen & Audio Recorder | `FormGrabadora` | Screen capture via AForge.Video + SharpAvi, audio capture via NAudio, FFMpeg encoding |

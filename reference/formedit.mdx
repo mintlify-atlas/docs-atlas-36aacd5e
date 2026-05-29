@@ -1,0 +1,226 @@
+---
+title: "FormEdit — Multi-Format Document Editor"
+sidebarTitle: "FormEdit"
+description: "FormEdit opens and edits CSV, Excel, Word, PowerPoint, plain text, JSON, XML, and PDF files. Tabular files render in an editable DataGridView; text files in a RichTextBox."
+---
+
+`FormEdit` is a self-contained document editor that supports nine file formats behind a single **Cargar** / **Guardar** interface. Tabular formats (CSV, Excel) populate an editable `DataGridView` (`dgvDatos`) where rows and columns can be freely added, deleted, or modified. Prose formats (Word, PowerPoint, TXT, JSON, XML) render in a syntax-aware `RichTextBox` (`rtbContenido`) with a dark theme. PDF files are displayed read-only via an embedded `WebView2` control. Save operations write back to the original file, using a backup-then-replace strategy for binary formats to protect against partial-write failures.
+
+---
+
+## Overview
+
+When `btnCargar_Click` fires, the form reads `_currentFile`'s extension, calls the matching `Cargar*` method, and sets `_currentFileType` to a canonical string (`"CSV"`, `"EXCEL"`, `"WORD"`, `"POWERPOINT"`, `"TXT"`, `"JSON"`, `"XML"`, `"PDF"`). `btnGuardar_Click` reads `_currentFileType` and routes to the matching `Guardar*` method — or shows an informational message for read-only formats (PowerPoint, PDF).
+
+JSON and XML files additionally receive syntax colouring via `AplicarColoreado_JSON()` and `AplicarColoreado_XML()`, which use `Regex.Matches` to selectively recolour tokens inside the `RichTextBox` without replacing the text.
+
+---
+
+## Key Fields
+
+| Field | Type | Purpose |
+|---|---|---|
+| `_currentFile` | `string` | Absolute path of the file currently loaded. Empty string when no file is open. |
+| `_currentFileType` | `string` | Canonical format tag set by the `Cargar*` methods; drives `btnGuardar_Click` routing. |
+| `_currentDataTable` | `DataTable` | Reserved for future binding; tabular data is currently stored directly in `dgvDatos` columns and rows. |
+
+---
+
+## Methods
+
+### `ConfigurarControles`
+
+Called from the constructor. Sets `AllowUserToAddRows = true`, `AllowUserToDeleteRows = true`, `ReadOnly = false`, and `AutoSizeColumnsMode = AllCells` on `dgvDatos`, and enables word wrap on `rtbContenido`.
+
+```csharp
+private void ConfigurarControles()
+```
+
+---
+
+### `CargarCSV`
+
+Reads the file with `File.ReadAllLines`, splits on commas, creates a `DataGridViewColumn` for each header, and adds one `DataGridViewRow` per data line. Switches the visible panel to `dgvDatos`.
+
+```csharp
+private void CargarCSV()
+```
+
+---
+
+### `CargarExcel`
+
+Opens the `.xlsx` file as a read-only `SpreadsheetDocument` (OpenXml SDK). Enumerates `SheetData` rows, resolves shared-string references via `GetCellValue`, and populates `dgvDatos`.
+
+```csharp
+private void CargarExcel()
+```
+
+---
+
+### `CargarWord`
+
+Reads `word/document.xml` from the `.docx` ZIP archive, extracts all `<w:t>` text nodes, and displays the concatenated text in `rtbContenido`.
+
+```csharp
+private void CargarWord()
+```
+
+---
+
+### `CargarPowerPoint`
+
+Reads every `ppt/slides/slideN.xml` entry from the `.pptx` ZIP archive in name order, extracts `<a:t>` text nodes per slide, and renders slide separators and text in `rtbContenido`.
+
+```csharp
+private void CargarPowerPoint()
+```
+
+---
+
+### `CargarTexto`
+
+Reads the file as UTF-8 text and displays it in `rtbContenido` with a Consolas 11 pt font on a dark background (`#1E1E1E` / `#DCDCDC`). Used for `.txt` files.
+
+```csharp
+private void CargarTexto()
+```
+
+---
+
+### `CargarJSON`
+
+Same as `CargarTexto` for raw file loading, then calls `AplicarColoreado_JSON()` to apply token colours: yellow for braces/brackets, green for string literals, blue for numbers, orange for `true`/`false`/`null`.
+
+```csharp
+private void CargarJSON()
+```
+
+---
+
+### `CargarXML`
+
+Same pattern as `CargarJSON`, followed by `AplicarColoreado_XML()`: blue for tags, light-blue for attribute names, brown for attribute values, green for comments.
+
+```csharp
+private void CargarXML()
+```
+
+---
+
+### `CargarPDF` *(async)*
+
+Hides `rtbContenido` and makes `webViewPdf` visible. Calls `webViewPdf.EnsureCoreWebView2Async()` then navigates `CoreWebView2` to the file URI. PDF files are read-only; `btnGuardar_Click` shows an informational message instead of writing.
+
+```csharp
+private async void CargarPDF()
+```
+
+---
+
+### `GuardarCSV`
+
+Reads headers from `dgvDatos.Columns`, iterates non-new rows, and writes a quoted comma-separated file to `_currentFile` with UTF-8 encoding. Values containing commas or double-quotes are RFC 4180–escaped.
+
+```csharp
+private void GuardarCSV()
+```
+
+---
+
+### `GuardarExcel`
+
+Implements a three-step safe-save: (1) copy original to `*.backup`, (2) open a temp copy as a writeable `SpreadsheetDocument`, (3) replace `SheetData` rows from `dgvDatos`, then (4) move the temp file over the original and delete the backup. Restores from backup if any step fails.
+
+```csharp
+private void GuardarExcel()
+```
+
+---
+
+### `GuardarWord`
+
+Reads `word/document.xml` from the `.docx` ZIP, removes all `<w:t>` nodes from the body, creates new `<w:p>/<w:r>/<w:t>` elements for each line of `rtbContenido.Text`, then writes the modified XML back into the archive using the same backup-then-replace pattern as `GuardarExcel`.
+
+```csharp
+private void GuardarWord()
+```
+
+---
+
+### `GuardarTexto`
+
+Writes `rtbContenido.Text` directly to `_currentFile` with UTF-8 encoding. Used for TXT, JSON, and XML.
+
+```csharp
+private void GuardarTexto()
+```
+
+---
+
+### `GetCellValue`
+
+Helper that resolves an OpenXml `Cell` value: returns the raw string for most types, but dereferences the `SharedStringTable` when `DataType == CellValues.SharedString`.
+
+```csharp
+private string GetCellValue(WorkbookPart workbookPart, Cell cell)
+```
+
+<ParamField path="workbookPart" type="WorkbookPart">
+  The parent workbook part; needed to access the shared string table.
+</ParamField>
+
+<ParamField path="cell" type="Cell">
+  The OpenXml `Cell` element to read.
+</ParamField>
+
+---
+
+### `AplicarColoreado_JSON` / `AplicarColoreado_XML`
+
+Apply syntax colouring to `rtbContenido` by iterating `Regex.Matches` per token pattern and setting `SelectionColor` on each match range. `SuspendLayout` / `ResumeLayout` brackets the colour pass to avoid redundant repaints.
+
+```csharp
+private void AplicarColoreado_JSON()
+private void AplicarColoreado_XML()
+```
+
+---
+
+### `ColorearPatron`
+
+Low-level helper shared by the two colouring methods. Selects each regex match in the `RichTextBox` and assigns the given colour, then resets the selection.
+
+```csharp
+private void ColorearPatron(string patron, System.Drawing.Color color)
+```
+
+<ParamField path="patron" type="string">
+  Regular expression pattern to match within `rtbContenido.Text`.
+</ParamField>
+
+<ParamField path="color" type="System.Drawing.Color">
+  The foreground colour to apply to every match.
+</ParamField>
+
+---
+
+## Events / Button Handlers
+
+| Handler | Trigger | Behaviour |
+|---|---|---|
+| `btnCargar_Click` | "Cargar Archivo" button | Opens `OpenFileDialog` supporting all nine formats, dispatches to the matching `Cargar*` method, and updates the form title. |
+| `btnGuardar_Click` | "Guardar Cambios" button | Routes to `GuardarCSV`, `GuardarExcel`, `GuardarWord`, or `GuardarTexto` based on `_currentFileType`. Shows an info dialog for PowerPoint and PDF. |
+
+---
+
+## Related Components
+
+<CardGroup cols={2}>
+  <Card title="FormDataBase" href="/reference/formdatabase">
+    Bulk-imports tabular files into the unified DataItem model for analysis and charting.
+  </Card>
+  <Card title="FormCorrector" href="/reference/formcorrector">
+    Validates and cleans tabular data through an automated pipeline before export.
+  </Card>
+</CardGroup>
